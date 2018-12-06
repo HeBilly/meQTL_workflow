@@ -1,5 +1,5 @@
 ---
-title: "Computational workflow for the identification of Methylation QTLs (meQTL) in DNA methylation and genotyped datasets"
+title: "meQTL_test_Bell"
 author: "Weixiong He"
 date: "2018/10/1"
 output:
@@ -12,134 +12,99 @@ knitr::opts_chunk$set(echo = FALSE,
                       message = TRUE,warning = FALSE)
 ```
 
-
-## Introduction
-Genome-wide association studies (GWAS) have evolved over recent years into an indispensable tool for investigating complex traits/diseases in human genetics. Some association tests focus on binary phenotypes (qualitative traits, e.g., dead/alive), while other association tests are specific to continuous variables (quantitative traits) (Hirschhorn & Daly, 2005). The influence of genetic variation on a quantitative trait is known as a quantitative trait locus (QTL). In the case a QTL is able to affect the DNA methylation pattern in the genome, these types of genetic variants are called meQTLs.
-
-meQTL are quantitative trait loci that affect the DNA methylation on target zget CpG sites (Smith et al., 2014). Generally they are SNPs thus we typically analyse the SNP-CpG association. According to the distance between SNP-CpG association, meQTL can be further classfied to local or cis-meQTL (distance <= 1Mb) and distant or trans-meQTL (distance > 1Mb). DNA methylation may act in cis- and trans- pathways, with the cis-pathway regulating the methylation pattern allele-specifically. For instance, the local cis-meQTL found in a transcriptional factor (TF) site can lead to the reduction of TF binding and enrichment of methylation, whereas trans-meQTLs can influence the transcription process of multiple genes (Gibbs et al., 2010). The results from trans-meQTL analyses can also present as genetic variation (SNP) at TF binding sites and simulate the activity of diffusible factors resulting in the alteration of gene structure and function during different developmental stages; diffusible factors impact both alleles on two homologous chromosomes (Consortium, 2015; del Rosario et al., 2015; Hoffmann et al., 2016; Kilpinen et al., 2013). Compared with local meQTLs, distant meQTLs are less common, more tissue-specific and have a weaker effect on phenotype (Lemire et al., 2015). Distant meQTLs may interact with target genes by physical connection in the three-dimensional looping structure and commonly act as trans-meQTLs (Michaelson, Loguercio, & Beyer, 2009; Schleif, 1992). The detailed molecular mechanism of cis- and trans-meQTLs is not well known since a large number of association tests are required to eliminate the noise caused by various haplotypes, variants and linkage effects (McClay et al., 2015). 
-
-In this workflow, we apply R package MatrixEQTL for identifying the SNP-CpG associations with following data visualisation. We also compare the result when applying different index in MatrixEQTL, for example, the amount of meQTL identified with/without covariants data.  
-
-Test Dataset
-We will be using a …
-
-
+## Load packages
 ```{r library, message=FALSE}
 library(edgeR)
 library(tidyverse)
 library(magrittr)
 library(biomaRt)
-BiocManager::install("MatrixEQTL")
 library(MatrixEQTL)
 library(limma)
 library(devtools)
 library(dplyr)
-install_github("drveera/ggman")
 library(ggman)
 library(readr)
+library(gdsfmt)
+library(SNPRelate)
+library(GEOquery)
+library(limma)
+library(minfi)
 
 ```
 
-## Preparing the genome annotation
-
-Ensembl is a global resource for bioinformatics, and contains information on the annotation of eukaryotic genomes. Using the package `biomaRt` we will firstly obtain the snp and gene information for hg19/GRCh37
-
-
-```{r dataset}
-grch37_snp = useEnsembl(biomart="ENSEMBL_MART_SNP", 
-                 host="grch37.ensembl.org", 
-                 dataset = "hsapiens_snp")
-
-grch37_gene = useEnsembl(biomart="ENSEMBL_MART_ENSEMBL", 
-                 host="grch37.ensembl.org", 
-                 dataset = "hsapiens_gene_ensembl")
-
-```
-
-## Preparing methylation data 
-To run a meQTL analysis, we need the following input datasets:
-1.	Genotype data 
-2.	Methylation levels for each CpG site; and,
-3.	Covariates that 
-
-While we will not provide direct code on how the input files were created, its important to know what was previously done to generate inout files for meQTL analyses. Below, we will input DNA methylation beta values (Wan et al.) from 96 Placental Illumina EPIC arrays, and additional sample information which we will include in the analysis as covariates.
-
-```{r SNP sampleInfo}
-#loading placental methylation data
-normDNAme <- readRDS("~/R/Weixiong_Project/data/Weixiong_DNAme_files/Placenta9-betaSQNPlacentaDpP_DpCR_DpSNPs_DpXY_jimmy.rds") 
-normDNAme <- as.data.frame(normDNAme)
-
-write_tsv(normDNAme, "~/R/Weixiong_Project/data/Weixiong_DNAme_files/methylation.txt")
-
-##loading sample data
-# DNAmeSampleInfo <- read_delim("~/Documents/Research/Project/data/Weixiong_DNAme_files/DNAme_placenta_sampleInfo.txt", 
-#                               "\t", col_names = c("Name", "ID", "GestationalAge", "Slide", "Basename",
-#                                                   "Gender", "MaternalAge", "BMI", "SmokingStatus", "Batch"),
-#                               col_types = "ccicccidcc") %>%
-#                                mutate(Gender = if_else(Gender == "M", 0, 1)) %>% #digitalise the gender, male = 0, female = 1
-#                                 mutate(SmokingStatus = if_else(SmokingStatus == "N", 0, 1)) %>% # digitalise the smokingstatus, N =0, Y = 1
-#                                  mutate(Basename = factor(Basename)) %>% 
-#                                   mutate(Basename = as.integer(Basename)) %>% #rank the Basename
-#                                   dplyr::select(ID,GestationalAge, Basename, Gender, MaternalAge, BMI, SmokingStatus, Batch)
-# colnames(normDNAme) <- DNAmeSampleInfo$ID
-# head(DNAmeSampleInfo)
-
-
-```
-
-
-Principal component analysis (PCA) is a statistical procedure that uses an orthogonal transformation to convert a set of observations of possibly correlated variables (entities each of which takes on various numerical values) into a set of values of linearly uncorrelated variables called principal components. Generally it is a method for simplifying the data and demonstrate which component can be a major factor for distinguishing data. PCA is able to demonstarte the principal components that cause the difference between samples. The component causing the greatest difference in the sample is PC1, the second greatest as PC2. Besides, PCA is able to demonstrate the distribution of samples under different conditions. More similar the sample composition, the closer the sample in PCA. Other than that, PCA indicates the differences between samples. The distance between the two samples on the horizontal and vertical axes represents the similarity under the influence of principal components (PC1,PC2,PC3 and so on). 
-
-
-## PCA for covariants data
-
-To account for variation within our genotyped samples, we need to identify any sample variation in the dataset. Here we use PCA.
-
-
-```{r PCA_5_covariates}
-
-
-cov <- read.delim("data/Weixiong_DNAme_files/covariates_87.txt", row.names = 1) %>% t() %>% as.tibble()
-ggplot(cov,aes(x=PCA1,y=PCA2,colour = factor(Sex))) + geom_point() + theme_bw() + labs(colour="Sex")+ scale_color_manual(labels=c("male","female"),values=c("red","blue"))
-
-  #guides(fill=guide_legend(title = NULL)) 
-
-ggplot(cov,aes(x=PCA1,y=PCA2,colour = factor(GestationalAge))) + geom_point() + theme_bw() 
-ggplot(cov,aes(x=PCA1,y=PCA2,colour = RIN)) + geom_point() + theme_bw() 
-
-
-
-#plot(cov$PCA1,cov$PCA2,xlab="PCA1", ylab="PCA2", col=brewer.pal(n = 2, name = "Paired"))
-```
-
-
-## Preparing position information of CpG sites
-
-To build association between snps and CpG sites, we should get the position information of CpG sites. Thus, we get the annotation for Illumina's EPIC methylation arrays and extract the position information of CpG sites. Due to the local effect of meQTL is normally found within 1MB of target CpG site, so the distance between left and right end is set to 1Mb. The probe file will be used in following MatrixEQTL step. 
+# Data preparing
+## LD-pruning
 ```{r}
-source("http://bioconductor.org/biocLite.R")
-biocLite("IlluminaHumanMethylation27k.db")
-data(IlluminaHumanMethylation27kmanifest)
-ann.Epic_B <- IlluminaHumanMethylation27kmanifest #get annotation of methylation data
-as.data.frame(ann.Epic_B) %>% #annotation data -> dataframe
-  dplyr::select(chr, pos) %>% #extract chromsome and position information
-  tibble::rownames_to_column(var = "id") %>% #id: col -> row
-  mutate(chr = gsub("^chr", "", chr)) %>% #replace ^chr to chr
-  mutate(s2 = pos+1,
-         s1 = pos) %>% ## 1MB
-  dplyr::select(id, chr, s1, s2) %>%
-  write_tsv("~/R/Weixiong_Project/test/Bell/Probes.txt")
+Vcf.fn <- "test/Bell/YRI.vcf"
+snpgdsVCF2GDS(Vcf.fn, "test/Bell/YRI.gds", method="biallelic.only", verbose = TRUE)
+genofile <- snpgdsOpen("test/Bell/YRI.gds")
+snpgdsSummary(genofile)
+head(genofile)
+# Run pruning and get a set of ids that are LD pruned
 
+snpset <- snpgdsLDpruning(genofile, ld.threshold=0.8, slide.max.n = 50)
+
+snpset.id.pruned <- unlist(snpset)
+
+
+# Read GDS and subset genotype matrix to only have LD pruned IDs
+
+g <- read.gdsn(index.gdsn(genofile, "genotype"))
+
+g <- g[,snpset.id.pruned]
+
+g <- g %>% t %>% as.data.frame()
+sample_id <- (read.gdsn(index.gdsn(genofile, "sample.id")))
+colnames(g) <- sample_id
+ids <- (read.gdsn(index.gdsn(genofile, "snp.rs.id")))
+
+idsPruned <- ids[snpset.id.pruned]
+# Create the genotype dataframe and output table
+
+genotypes <- tibble::add_column(g, rsIDs = idsPruned, .before = 1)
+
+write_tsv(genotypes, "test/Bell/YRI_genotype_prunned.txt")
+```
+
+## Matching the sample between genotype and methylation data
+```{r}
+geno <- read_tsv("test/Bell/YRI_genotype_prunned.txt")
+
+##loading the paper's result
+Sample_name <- read_delim("test/Bell/YRI160ids.GEOformat.txt", 
+                "\t", escape_double = FALSE, trim_ws = TRUE) %>% 
+                mutate(title=gsub("* replicate-.","",title))
+
+## filter by sample name
+hapmap <- geno  %>% 
+  gather("Sample", "genotype", starts_with("NA")) %>% 
+  as.tibble() %>% 
+  dplyr::filter(Sample %in% Sample_name$title) %>% 
+  spread("Sample", "genotype")
+
+write_tsv(hapmap,"test/Bell/genotype_matched.txt")
+```
+
+## Create methylation index file
+```{r}
+meth_data <- read_delim("test/Bell/YRI160.27578probes.beta.GEOformat.txt", 
+                        "\t", escape_double = FALSE, trim_ws = TRUE, 
+                        skip = 1)   %>% 
+                        as.data.frame
+meth_data <- meth_data %>% column_to_rownames("ID_REF")
+
+colnames(meth_data) <- Sample_name$title
+
+meth_data <- meth_data[, !duplicated(colnames(meth_data))] %>%  as.data.frame()
+
+meth_data <- meth_data[,match(col,colnames(meth_data))[2:length(match(col,colnames(meth_data)))]] 
+
+meth_data <- meth_data %>% rownames_to_column(var="Probe")
+
+write_tsv(meth_data,"test/Bell/Methylation_int.txt")
 ```
 
 ## Run MatrixEQTL
-
-MatrixEQTL requires 5 datasets: snps, DNA methylation, covariates, SNP position and DNA methylation position. 
-The sample order of all matrices should be consistent                                       
-
-MatrixEQTL processes linear regression to genotype information and DNA methylation information. And Matrix eQTL can perform separate analysis for local (cis) and distant (trans) QTLs. The cis-analysis specific parameters includes PvOutputThreshold.cis > 0, cisDist, snpspos and genepos in MatrixEQTL main function. CisDist is the distance threshold between SNP and association, if the distance between SNP and CpG is equal or less than CisDist, the SNP-CpG association will be identified as the cis-(local) meQTL. snpspos and genepos represents the genomic location of genes and SNPs. MatrixEQTL separates the p-value thresholds for local and distant eQTLs based on PvOutputThreshold and PvOutputThreshold.cis.Distant and local as- sociations significant at corresponding thresholds are recorded in output_file_name and output_file_name.cis respectively and in the returned object. The false discovery rate (FDR) indicates the rate of type I errors (False positive), the MatrixEQTL will calculate FDR for cis- and trans- meQTL respectively.        
-
-Due to DNA methylation is also a quantitative trait consistenting with the DNA methylation, thus the gene expression data is replaced by DNA methylation information. Here we set the cisDis to 50kb, we will compare this output file with 1Mb. 
 ```{r MatrixEQTL, message=FALSE}
 snps <- SlicedData$new()
 snps$fileDelimiter = "\t"   # the TAB character
@@ -188,20 +153,19 @@ save(me_DNAme_B_50kb, file = "/home/weixiong/R/Weixiong_Project/test/Bell/meQTL_
 
 ```
 
-
-MatrixEQTL will generate large matrix contains sec in time and QTL data. Further step is to extract specific data from it. The time.in.sec refers to the time difference between the start and the end of the analysis (in seconds). The 'all' includes the number of tests perfermed, number of meQTL identified, histogram bins used for recording p-value distribution, number of p-value that fell in each histogram bin. The cis information contains number of tests, number of meQTLs, hists.bins, hist.counts, vector with the best p-value for each SNP (min.pv.snps), vector with the best p-value for each gene (min.pv.gene). 
-
-# How many meQTLs were found
-When run without covariates files, 1201 meQTLs are identified; When the Cis-distance is set to 50kb, 1611 meQTLs are identified;When Cis-distance is set to 1MB, 3576 meQTLs are identified. 
+## How many cis-meQTL identified 
 ```{r}
-me_DNAme_B_50kb$all$neqtls
 me_DNAme_B_50kb$cis$neqtls
+```
+
+## Filter with FDR < 0.1
+```{r}
 sigCis_B_50kb <- me_DNAme_B_50kb$cis$eqtls %>%
   dplyr::filter(FDR < 0.1)
 sigCis_B_50kb
 ```
 
-Overlapped meQTLs
+## Overlapped meQTLs
 ```{r}
 B_result <-read_delim("~/R/Weixiong_Project/test/Bell/cis-meQTL.results", 
                                     " ", escape_double = FALSE, trim_ws = TRUE)
@@ -212,7 +176,6 @@ compare
 ```
 
 ## Manhattan Plot
-We plot –log 10 ( P -value) from MatrixEQTL result against chromosome position to demonstrate the location of Cis-meQTL
 ```{r Manhattan Plot}
 ## Manhathan plot
 devtools::install_github("stephenturner/qqman")
@@ -235,7 +198,7 @@ cis_info_B_50 %>%
 #c("orangered2","aquamarine2","gray40","skyblue2","skyblue4","coral3","lightyellow","magenta4","orchid3","paleturquoise4","sienna1","plum1","seashell3","steelblue3","ivory4","hotpink1","grey38","cyan","chartreuse4","darkolivegreen","blueviolet","cornflowerblue"), 
 
 ```
-Each point on the Manhattan plot represents a genetic variant. The X axis shows its position on a chromosome, the Y axis indicates how much they are associated with CpG methylation. The blue line is the suggestive line, implying '-log10(1e-5) = 5', the red line represents the genome-wide significance, the default value is '-log10(5e-8) ≈ 7.3'.
+
 
 ## qqPlot
 In this step, we use qq-plot to show whether the meQTL data is reasonable
@@ -248,133 +211,5 @@ plot(
   ylim = NULL,
   main = NULL)
 ```
-The Q-Q plot verifies the distribution of the data by comparing the quantile of the sample data with the known distribution. It compares the consistency between the observed P value (the Y-axis) and the expected P value. The intuitive interpretation of QQ plot is to judge whether the distribution of points in the graph is reasonable (whether it is on the diagonal), and then infer whether the P value obtained by the current statistical model conforms to the expected value and whether the statistical model is reasonable. In this plot, in the lower left corner of the  plot are the low significance loci, that is, the loci that are not related to the CpG methylation, and the observed P value of these loci should be consistent with the expected value. These points do lie on the diagonal, which indicates that the analysis model is reasonable. Dots in the upper right corner of the figure are the loci with high significance, which is a potential candidate methylation-related QTLs. These points are above the diagonal line, that is, the observed P value of the QTL exceeds the expected P value, indicating that the effect of these QTLs exceeds the random effect, which further indicates that these QTLs are significantly correlated with the DNA methylation. The lower left corner of the figure indicates the reasonableness of the model, while the upper right corner indicates that the DNA methylation related QTLs. In the result of MatrixEQTL, local meQTLs shows higher significance than distant meQTLs. 
 
-
-
-## Select top 10 cis-meQTL and annotate
-
-Within validation step, the meQTL with FDR < 0.05 are selected and the 10 strongest SNP-CpG association. Then these SNP-CpG pairs are annotated from the information stored in hg19/GRCh37 marts. The annotation for methylation sites are obtained from "IlluminaHumanMethylationEPICanno.ilm10b2.hg19" package. 
-```{r}
-## snp annotation
-table1 <- sigCis_B %>%
-  getBM(attributes = c("refsnp_id", "ensembl_gene_stable_id", 
-                       "allele", "minor_allele"), 
-                  filters = "snp_filter", 
-                  values = sigCis$snps, 
-                  mart = grch37_snp)  
-table2 <- getBM(attributes = c("ensembl_gene_id", "external_gene_name",
-                       "chromosome_name", "start_position", 
-                       "end_position", "description"),
-                filters = "ensembl_gene_id", 
-                values =  table1$ensembl_gene_stable_id, 
-                mart = grch37_gene) 
-sig_Cis_snp_B <- inner_join(table1,table2, by = c("ensembl_gene_stable_id"="ensembl_gene_id")) %>% as.data.frame()
-ann_CisCpG_B <- ann.Epic[match(sigCis_B$gene, ann.Epic$Name),c(1:4,22:23)]
-rownames(ann_CisCpG) <- NULL
-
-ann_Cisme <- merge(merge(sig_Cis_snp,sigCis, by.x= "refsnp_id", by.y = "snps"), unique(ann_CisCpG), by.x = "gene", by.y = "Name") %>% as.data.frame() %>% dplyr::select(refsnp_id, allele, minor_allele, CpG = gene, external_gene_name, description, statistic, pvalue, FDR, beta)
-ann_Cisme
-
-```
-
-## Select top 10 trans-meQTL
-
-```{r}
-sigTrans <- me_DNAme$trans$eqtls %>%
-  dplyr::filter(FDR < 0.05)
-
-table3 <- sigTrans %>%
-  getBM(attributes = c("refsnp_id", "ensembl_gene_stable_id", 
-                       "allele", "minor_allele"), 
-                  filters = "snp_filter", 
-                  values = sigTrans$snps, 
-                  mart = grch37_snp)  
-table4 <- getBM(attributes = c("ensembl_gene_id", "external_gene_name",
-                       "chromosome_name", "start_position", 
-                       "end_position", "description"),
-                filters = "ensembl_gene_id", 
-                values =  sigTrans_snp$ensembl_gene_stable_id, 
-                mart = grch37_gene) 
-sig_Trans_snp <- inner_join(table3,table4, by = c("ensembl_gene_stable_id"="ensembl_gene_id")) %>% as.data.frame()
-ann_TransCpG <- ann.Epic[match(sigTrans$gene, ann.Epic$Name),c(1:4,22:23)]
-rownames(ann_TransCpG) <- NULL
-
-ann_Transme <- merge(merge(sig_Trans_snp,sigTrans, by.x= "refsnp_id", by.y = "snps"), unique(ann_TransCpG), by.x = "gene", by.y = "Name") %>% as.data.frame() %>% dplyr::select(refsnp_id, allele, minor_allele, CpG = gene, external_gene_name, description, statistic, pvalue, FDR, beta)
-  
-  
-#methylation annotation
-
-ann_transme
-```
-
-
-## Boxplot
-
-The strongest cis-association is between SNP rs61776828 and CpG probe cg14484676. Here we use boxplot to demonstrate the association between the genotype and the phenotype (methylation).
-```{r}
-
-snp_info <- read_tsv("data/Weixiong_DNAme_files/final_genotypes_87_pruned-r2-08.txt") %>%
-  dplyr::rename(snps = rsIDs)
-methylation_info <- read.delim("data/Weixiong_DNAme_files/DNAme_int.txt") %>%
-  rownames_to_column("gene") %>%
-  as_tibble()
-
-me <- methylation_info["cg14484676",]
-snp <- filter(snp_info, rsIDs == "rs61776828")
-first_snp <- rbind(snp, me[, names(snp)]) %>% as.matrix() %>% t %>% as.data.frame() %>% magrittr::set_colnames(c("genotype","methylation")) 
-#first_snp <- within(first_snp, genotype <- factor(genotype, labels = c("A/A", "A/C", "C/C")))
-
-ggplot(first_snp, aes(x =	genotype, y=methylation, group = genotype)) + geom_boxplot() + stat_summary(fun.y = "mean", geom = "point", shape = 23, size = 3, fill = "orange")
-
-
-```
-
-
-```{r}
-sigCis %>%
-  dplyr::slice(1:10) %>%  # select row 1:10
-  dplyr::select(snps, gene) %>% # select column snps and gene
-  as_tibble() %>%
-  left_join(methylation_info, by = "gene") %>% # find match CpG
-  gather("Sample", "Methylation", starts_with("PAC")) %>% # Store sample name in Col "Sample", store correlated beta in Methylation
-  filter(Sample %in% colnames(snp_info)) %>% # match with sample in snp, 960->870 rows
-  split(f = .$Sample) %>% # split every PAC sample in splited tibbles
-  lapply(function(x){
-    left_join(x, snp_info[,c("snps", unique(x$Sample))]) %>% # allocate genotype data to every x by rsID
-      set_colnames(gsub("PAC.+", "Genotype", colnames(.))) # the original colnames would be PACXXX, we change it to Genotype
-  }) %>%
-  bind_rows() %>% # bind the rows together
-  mutate(Genotype = as.factor(Genotype)) %>%
-  ggplot(aes(Genotype, Methylation)) +
-  geom_boxplot() + stat_summary(fun.y = "mean", geom = "point", shape = 23, size = 3, fill = "orange") +
-  facet_wrap(~gene) +
-  theme_bw()
-```
-
-
-
-
-# Find snps affecting multiple CpG sites
-```{r}
-Cis_dup_snp <- sigCis[duplicated(sigCis$snps) | duplicated(sigCis$snps, fromLast = TRUE),]
-Cis_dup_cpg <- sigCis[duplicated(sigCis$gene) | duplicated(sigCis$gene, fromLast = TRUE),]
-Trans_dup_snp <- sigTrans[duplicated(sigTrans$snps) | duplicated(sigTrans$snps, fromLast = TRUE),]
-Trans_dup_cpg <- sigTrans[duplicated(sigTrans$gene) | duplicated(sigTrans$gene, fromLast = TRUE),]
-```
-
-# Plot cis-distance vs. R-square
-```{r}
-cis_dis_B <- dplyr::select(ann_cisme, refsnp_id,start_position,CpG_sites,pos,statistic,pvalue) %>% as.tibble() %>% mutate(cis_dis = pos-start_position) %>% mutate(regulation = if_else(cis_dis <= 0, "down", "up")) 
-cis_dis[complete.cases(cis_dis), ]
-tstat = cis_dis$statistic
-r = tstat / sqrt( dfFull + tstat^2 )
-R2 = r^2
-cis_dis$R2 <- R2
-ggplot(cis_dis,aes(x=cis_dis,y=R2,color=regulation)) + geom_point() +  theme_bw() + labs(x="SNP-CpG distance/kb",y="R-square") 
-```
-
-```{r}
-
-```
 
