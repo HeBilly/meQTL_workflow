@@ -54,11 +54,15 @@ g <- read.gdsn(index.gdsn(genofile, "genotype"))
 g <- g[,snpset.id.pruned]
 
 g <- g %>% t %>% as.data.frame()
+
 sample_id <- (read.gdsn(index.gdsn(genofile, "sample.id")))
+
 colnames(g) <- sample_id
+
 ids <- (read.gdsn(index.gdsn(genofile, "snp.rs.id")))
 
 idsPruned <- ids[snpset.id.pruned]
+
 # Create the genotype dataframe and output table
 
 genotypes <- tibble::add_column(g, rsIDs = idsPruned, .before = 1)
@@ -91,11 +95,12 @@ meth_data <- read_delim("test/Bell/YRI160.27578probes.beta.GEOformat.txt",
                         "\t", escape_double = FALSE, trim_ws = TRUE, 
                         skip = 1)   %>% 
                         as.data.frame
+
 meth_data <- meth_data %>% column_to_rownames("ID_REF")
 
 colnames(meth_data) <- Sample_name$title
 
-meth_data <- meth_data[, !duplicated(colnames(meth_data))] %>%  as.data.frame()
+meth_data <- meth_data[, !duplicated(colnames(meth_data))] %>% as.data.frame()
 
 meth_data <- meth_data[,match(col,colnames(meth_data))[2:length(match(col,colnames(meth_data)))]] 
 
@@ -184,7 +189,6 @@ pvalue_cis_B_50 <- as.data.frame(me_DNAme_B_50kb$cis$min.pv.snps) %>%
   tibble::rownames_to_column(var = "ID")
 
 colnames(pvalue_cis_B_50) <- c("ID","pvalue")
-head(pvalue_cis_B_50)
 
 cis_info_B_50 <- inner_join(pvalue_cis_B_50, snpspos, by = c("ID" = "geneid"))
 
