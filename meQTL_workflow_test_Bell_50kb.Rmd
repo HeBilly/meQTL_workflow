@@ -71,6 +71,7 @@ genotypes <- tibble::add_column(g, rsIDs = idsPruned, .before = 1)
 write_tsv(genotypes, "test/Bell/YRI_genotype_prunned.txt")
 ```
 
+
 ## Matching the sample between genotype and methylation data
 ```{r}
 geno <- read_tsv("../test/Bell/YRI_genotype_prunned.txt") #%>% cSplit("rsIDs", ";", "long")
@@ -239,6 +240,7 @@ options(MatrixEQTL.dont.preserve.gene.object = TRUE)
 me_DNAme_B_50kb = Matrix_eQTL_main(
   snps = snps,
   gene = DNAme,
+  cvrt = cvrt,
   output_file_name = '../test/Bell/DNAme_output_trans_1e-8.txt', 
   pvOutputThreshold = 1e-8,  ###If the results of the associate study exceed the threshold, the results will not be retained in the final document
   useModel = modelLINEAR,
@@ -277,7 +279,7 @@ sigCis_B_50kb
 B_result <-read_delim("../test/Bell/cis-meQTL.results", 
                                     " ", escape_double = FALSE, trim_ws = TRUE)
 as.character(sigCis_B_50kb$snps) -> sigCis_B_50kb$snps
-compare <- merge(sigCis_B_50kb,B_result,by.x = "snps", by.y = "SNP")
+compare <- left_join(sigCis_B_50kb,B_result,by = c('gene' = 'CG'))
 compare
 ```
 
