@@ -1,0 +1,98 @@
+---
+title: "meQTL_test_data_preparing"
+author: "Weixiong He"
+date: "05/12/2018"
+output: html_document
+---
+
+Replication of the result from Bell et.al (https://genomebiology.biomedcentral.com/articles/10.1186/gb-2011-12-1-r10). The genotype data is obtained from ftp://ftp.ncbi.nlm.nih.gov/hapmap/phase_3/hapmap3_reformatted/YRI.hmap.gz, while the methylation data is from http://eqtl.uchicago.edu/Methylation/.
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, 
+                      message = TRUE,warning = FALSE)
+```
+
+
+```{r}
+library(tidyverse)
+library(magrittr)
+library(gdsfmt)
+library(SNPRelate)
+library(GEOquery)
+library(limma)
+library(minfi)
+```
+
+## Genotype data preparing
+The genotype data of YRI population is *.hmap format, which needs to be converted to VCF file for downstream analysis. Hence we applied the VariantsToVCF tool in GATK (version before 4.0). 
+```{r}
+##LD-pruning
+Vcf.fn <- "test/Bell/YRI.vcf"
+snpgdsVCF2GDS(Vcf.fn, "test/Bell/YRI.gds", method="biallelic.only", verbose = TRUE)
+genofile <- snpgdsOpen("test/Bell/YRI.gds")
+snpgdsSummary(genofile)
+head(genofile)
+# Run pruning and get a set of ids that are LD pruned
+
+snpset <- snpgdsLDpruning(genofile, ld.threshold=0.8, slide.max.n = 50)
+
+snpset.id.pruned <- unlist(snpset)
+
+
+# Read GDS and subset genotype matrix to only have LD pruned IDs
+
+g <- read.gdsn(index.gdsn(genofile, "genotype"))
+
+g <- g[,snpset.id.pruned]
+
+g <- g %>% t %>% as.data.frame()
+sample_id <- (read.gdsn(index.gdsn(genofile, "sample.id")))
+colnames(g) <- sample_id
+ids <- (read.gdsn(index.gdsn(genofile, "snp.rs.id")))
+
+idsPruned <- ids[snpset.id.pruned]
+# Create the genotype dataframe and output table
+
+genotypes <- tibble::add_column(g, rsIDs = idsPruned, .before = 1)
+
+write_tsv(genotypes, "test/Bell/YRI_genotype_prunned.txt")
+```
+
+## Matching the sample between genotype and methylation data
+```{r}
+geno <- read_tsv("test/Bell/YRI_genotype_prunned.txt")
+
+Sample_name <- read_delim("test/Bell/YRI160ids.GEOformat.txt", 
+                "\t", escape_double = FALSE, trim_ws = TRUE) %>% 
+                mutate(title=gsub("* replicate-.","",title))
+
+hapmap <- geno  %>% 
+  gather("Sample", "genotype", starts_with("NA")) %>% 
+  as.tibble() %>% 
+  dplyr::filter(Sample %in% Sample_name$title) %>% 
+  spread("Sample", "genotype")
+
+write_tsv(hapmap,"test/Bell/genotype_matched.txt")
+```
+
+## Create methylation index file
+```{r}
+meth_data <- read_delim("test/Bell/YRI160.27578probes.beta.GEOformat.txt", 
+                        "\t", escape_double = FALSE, trim_ws = TRUE, 
+                        skip = 1)   %>% 
+  as.data.frame
+meth_data <- meth_data %>% column_to_rownames("ID_REF")
+
+colnames(meth_data) <- Sample_name$title
+
+meth_data <- meth_data[, !duplicated(colnames(meth_data))]
+meth_data <- meth_data %>%  as.data.frame()
+col
+meth_data <- meth_data[,match(col,colnames(meth_data))[2:length(match(col,colnames(meth_data)))]] 
+
+meth_data <- meth_data %>% rownames_to_column(var="Probe")
+
+write_tsv(meth_data,"test/Bell/Methylation_int.txt")
+```
+

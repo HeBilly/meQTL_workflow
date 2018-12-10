@@ -29,7 +29,8 @@ library(SNPRelate)
 library(GEOquery)
 library(limma)
 library(minfi)
-
+library(splitstackshape)
+library(FDb.InfiniumMethylation.hg18)
 ```
 
 # Data preparing
@@ -37,7 +38,7 @@ library(minfi)
 ```{r}
 Vcf.fn <- "test/Bell/YRI.vcf"
 snpgdsVCF2GDS(Vcf.fn, "test/Bell/YRI.gds", method="biallelic.only", verbose = TRUE)
-genofile <- snpgdsOpen("test/Bell/YRI.gds")
+genofile <- snpgdsOpen("../test/Bell/YRI.gds")
 snpgdsSummary(genofile)
 head(genofile)
 # Run pruning and get a set of ids that are LD pruned
@@ -72,7 +73,7 @@ write_tsv(genotypes, "test/Bell/YRI_genotype_prunned.txt")
 
 ## Matching the sample between genotype and methylation data
 ```{r}
-geno <- read_tsv("test/Bell/YRI_genotype_prunned.txt")
+geno <- read_tsv("../test/Bell/YRI_genotype_prunned.txt") #%>% cSplit("rsIDs", ";", "long")
 
 ##loading the paper's result
 Sample_name <- read_delim("test/Bell/YRI160ids.GEOformat.txt", 
@@ -88,6 +89,8 @@ hapmap <- geno  %>%
 
 write_tsv(hapmap,"test/Bell/genotype_matched.txt")
 ```
+
+
 
 ## Create methylation index file
 ```{r}
@@ -109,6 +112,91 @@ meth_data <- meth_data %>% rownames_to_column(var="Probe")
 write_tsv(meth_data,"test/Bell/Methylation_int.txt")
 ```
 
+## Creating covariats data
+The covariates data is extracted from the result of the paper. 
+```{r}
+Meth <-  read_delim("../test/Bell/YRI160ids.GEOformat.txt", 
+                "\t", escape_double = FALSE, trim_ws = TRUE) %>% 
+                as.data.frame() %>% 
+                rename("Gender" = "characteristics: gender" ) %>% 
+                mutate(Gender = if_else(Gender == "Male", 0, 1)) %>% 
+                dplyr::select(description,Gender,replicate,batch)
+
+
+MethPCA<- meth_data %>% column_to_rownames("Probe")
+
+MethPCA <- prcomp(na.omit(MethPCA))
+
+
+covpca <-  as.data.frame(MethPCA$rotation[,1:6]) %>% 
+  tibble::rownames_to_column(var = "Sample")
+
+Cov <- left_join(Meth, covpca, by = c("description" ="Sample")) %>% t() %>% as.data.frame()
+  
+colnames(Cov) <- as.character(unlist(Cov[1,]))
+Cov<-Cov[-1,]
+write_tsv(Cov, "../test/Bell/covarites.txt")
+
+```
+
+## PCA of covarites
+```{r}
+Cov <- Cov %>% t() %>% as.data.frame()
+ggplot(Cov,aes(x=PC1,y=PC2,colour = Gender)) + 
+  geom_point() + theme_bw() + 
+  labs(colour="Gender")+ 
+  scale_color_manual(labels=c("male","female"),
+                     values=c("red","blue")) + theme(axis.text = element_blank()) 
+
+ggplot(Cov,aes(x=PC1,y=PC2,colour = replicate)) + 
+  geom_point() + 
+  theme_bw() + theme(axis.text = element_blank()) 
+
+ggplot(Cov,aes(x=PC1,y=PC2,colour = batch)) + 
+  geom_point() + 
+  theme_bw() + theme(axis.text = element_blank()) 
+```
+
+## Generate methylation postion file
+```{r}
+hm27.hg18 <- get27k(genome='hg18') 
+
+dfgr <- data.frame(hm27.hg18)
+DNAmeSampleInfo <- mcols(hm27.hg18, use.names=TRUE) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "id") %>%
+  dplyr::select(id, start = probeTarget, end = probeEnd)
+DNAmeSampleInfo$chr <- dfgr$seqnames
+
+DNAmeSampleInfo <- DNAmeSampleInfo %>%
+  mutate(chr = gsub("^chr", "", chr))  
+DNAmeSampleInfo <- DNAmeSampleInfo[,c(1,4,2,3)]
+write_tsv(DNAmeSampleInfo, "../test/Bell/probes.txt")
+```
+
+
+## Generate Snp position file
+```{r}
+head(genofile)
+pos <- read.gdsn(index.gdsn(genofile, "snp.position"))
+
+chrom <- read.gdsn(index.gdsn(genofile,"snp.chromosome"))
+
+
+snp_pos <- cbind(geneid = ids,chr = chrom,pos) %>% as.data.frame()
+
+snp_posPruned <- snp_pos %>% dplyr::filter(geneid %in% idsPruned) #%>% 
+
+snp_posPruned <- snp_posPruned %>% 
+  as.data.frame() %>% 
+  mutate(geneid=as.character(geneid)) %>% 
+  mutate(chr=as.character(chr)) %>% 
+  mutate(pos=as.integer(pos))
+
+write_tsv(snp_posPruned,"../test/Bell/snp_position_pruned.txt")
+```
+
+
 ## Run MatrixEQTL
 ```{r MatrixEQTL, message=FALSE}
 snps <- SlicedData$new()
@@ -117,7 +205,7 @@ snps$fileOmitCharacters = "NA" # denote missing values;
 snps$fileSkipRows = 1        # one row of column labels
 snps$fileSkipColumns = 1      # one column of row labels
 snps$fileSliceSize = 10000   # read file in slices of 100000 rows
-snps$LoadFile("/home/weixiong/R/Weixiong_Project/test/Bell/genotype_matched.txt")
+snps$LoadFile("../test/Bell/genotype_matched.txt")
 
 ### Load gene expression info
 DNAme = SlicedData$new()
@@ -126,11 +214,24 @@ DNAme$fileOmitCharacters = "character" # denote missing values;
 DNAme$fileSkipRows = 1        # one row of column labels
 DNAme$fileSkipColumns = 1       # one column of row labels
 DNAme$fileSliceSize = 10000     # read file in slices of 2,0000 rows
-DNAme$LoadFile("/home/weixiong/R/Weixiong_Project/test/Bell/Methylation_int.txt")
+DNAme$LoadFile("../test/Bell/Methylation_int.txt")
 
+cvrt = SlicedData$new()
+cvrt$fileDelimiter = "\t"
+cvrt$fileOmitCharacters = "NA"
+cvrt$fileSkipRows = 1
+cvrt$fileSkipColumns = 1
+cvrt$LoadFile("../test/Bell/covarites.txt");
 
-snpspos = read.table("/home/weixiong/R/Weixiong_Project/test/Bell/snp_position.txt", header = TRUE, stringsAsFactors = FALSE) #load 
-DNAmepos = read.table("~/R/Weixiong_Project/data/Weixiong_DNAme_files/probes.txt", header = TRUE, stringsAsFactors = FALSE)
+common = intersect(DNAme$columnNames, snps$columnNames) 
+
+snps$ColumnSubsample(match(common, snps$columnNames)) 
+
+DNAme$ColumnSubsample(match(common, DNAme$columnNames))
+cvrt$ColumnSubsample(match(common, cvrt$columnNames)) 
+
+snpspos = read.table("../test/Bell/snp_position_pruned.txt", header = TRUE, stringsAsFactors = FALSE) #load 
+DNAmepos = read.table("../test/Bell/probes.txt", header = TRUE, stringsAsFactors = FALSE)
 
 options(MatrixEQTL.dont.preserve.gene.object = TRUE)
 
@@ -138,29 +239,30 @@ options(MatrixEQTL.dont.preserve.gene.object = TRUE)
 me_DNAme_B_50kb = Matrix_eQTL_main(
   snps = snps,
   gene = DNAme,
-  output_file_name = '/home/weixiong/R/Weixiong_Project/test/Bell/DNAme_output_trans_1e-8.txt', 
+  output_file_name = '../test/Bell/DNAme_output_trans_1e-8.txt', 
   pvOutputThreshold = 1e-8,  ###If the results of the associate study exceed the threshold, the results will not be retained in the final document
   useModel = modelLINEAR,
   errorCovariance = numeric(),
   verbose = TRUE,  # Setting verbose to True in the configuration will result in the service generating more output (will show both WARNING and INFO log levels), normally you will only see WARNING or higher (ERROR for example)
-  output_file_name.cis = "/home/weixiong/R/Weixiong_Project/test/Bell/DNAme_output_cis_1e-5.txt",
+  output_file_name.cis = "../test/Bell/DNAme_output_cis_1e-5.txt",
   pvOutputThreshold.cis = 1e-5,
   snpspos = snpspos,
   genepos = DNAmepos,
   # Distance for local gene-SNP pairs
-  cisDist = 2e5,      #### 1e6 cis window = 1Mb (GTEx) ### DNAme 50kb 
+  cisDist = 5e4,      #### 1e6 cis window = 1Mb (GTEx) ### DNAme 50kb 
   noFDRsaveMemory = FALSE, ##save significant gene-SNP pairs directly to the output files, reduce memory footprint and skip FDR calculation. The eQTLs are not recorded in the returned object if noFDRsaveMemory = TRUE
   min.pv.by.genesnp = TRUE, ## record the minimum p-value for each SNP and each gene in the returned object. The minimum p-values are recorded even if if they are above the corresponding thresholds of pvOutputThreshold and pvOutputThreshold.cis.
   pvalue.hist = "qqplot") ## record information sufficient to create a QQ- plot of the p-values 
 
 
-save(me_DNAme_B_50kb, file = "/home/weixiong/R/Weixiong_Project/test/Bell/meQTL_B_50kb.Rds")
+save(me_DNAme_B_50kb, file = "../test/Bell/meQTL_B_50kb.Rds")
 
 ```
 
 ## How many cis-meQTL identified 
 ```{r}
 me_DNAme_B_50kb$cis$neqtls
+me_DNAme_B_50kb$cis$eqtls
 ```
 
 ## Filter with FDR < 0.1
@@ -172,11 +274,10 @@ sigCis_B_50kb
 
 ## Overlapped meQTLs
 ```{r}
-B_result <-read_delim("~/R/Weixiong_Project/test/Bell/cis-meQTL.results", 
+B_result <-read_delim("../test/Bell/cis-meQTL.results", 
                                     " ", escape_double = FALSE, trim_ws = TRUE)
 as.character(sigCis_B_50kb$snps) -> sigCis_B_50kb$snps
-colnames(sigCis_B_50kb)[1] <- "aa"
-compare <- merge(sigCis_B_50kb,B_result,by.x = "aa", by.y = "SNP")
+compare <- merge(sigCis_B_50kb,B_result,by.x = "snps", by.y = "SNP")
 compare
 ```
 
@@ -192,7 +293,6 @@ colnames(pvalue_cis_B_50) <- c("ID","pvalue")
 
 cis_info_B_50 <- inner_join(pvalue_cis_B_50, snpspos, by = c("ID" = "geneid"))
 
-#cis_info_filter_B <-  filter(cis_info_B,!startsWith(chr,"CHR_"))
 cis_info_B_50 %>%
   mutate(chr = as.numeric(chr)) %>%
   manhattan(chr = "chr", bp = "pos", p = "pvalue", snp = "ID", col =c("#A6CEE3","#FB9A99","#E31A1C","#D9D9D9","#1F78B4","#B2DF8A","#33A02C","#FDBF6F","#FF7F00","#CAB2D6","#6A3D9A","#F7FCB9","#B15928","#8DD3C7","#8DA0CB","#FFFF33","#FB8072","#80B1D3","#BF5B17","#B3DE69","#FCCDE5","#BC80BD"),annotatePval = 0.005)
