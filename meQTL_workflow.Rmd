@@ -1,10 +1,7 @@
 ---
 title: "Computational workflow for the identification of Methylation QTLs (meQTL) in DNA methylation and genotyped datasets"
 author: "Weixiong He"
-date: "2018/10/1"
-output:
-  word_document: default
-  html_document: default
+date: "01/07/2018"
 ---
 
 ```{r setup, include=FALSE}
@@ -12,30 +9,39 @@ knitr::opts_chunk$set(echo = FALSE,
                       message = TRUE,warning = FALSE)
 ```
 
-## Introduction
-Genome-wide association studies (GWAS) have evolved over recent years into an indispensable tool for investigating complex traits/diseases in human genetics. Some association tests focus on binary phenotypes (qualitative traits, e.g., dead/alive), while other association tests are specific to continuous variables (quantitative traits) (Hirschhorn & Daly, 2005). The influence of genetic variation on a quantitative trait is known as a quantitative trait locus (QTL). In the case a QTL is able to affect the DNA methylation pattern in the genome, these types of genetic variants are called meQTLs.
-
-meQTL are quantitative trait loci that affect the DNA methylation on target zget CpG sites (Smith et al., 2014). Generally they are SNPs thus we typically analyse the SNP-CpG association. According to the distance between SNP-CpG association, meQTL can be further classfied to local or cis-meQTL (distance <= 1Mb) and distant or trans-meQTL (distance > 1Mb). DNA methylation may act in cis- and trans- pathways, with the cis-pathway regulating the methylation pattern allele-specifically. For instance, the local cis-meQTL found in a transcriptional factor (TF) site can lead to the reduction of TF binding and enrichment of methylation, whereas trans-meQTLs can influence the transcription process of multiple genes (Gibbs et al., 2010). The results from trans-meQTL analyses can also present as genetic variation (SNP) at TF binding sites and simulate the activity of diffusible factors resulting in the alteration of gene structure and function during different developmental stages; diffusible factors impact both alleles on two homologous chromosomes (Consortium, 2015; del Rosario et al., 2015; Hoffmann et al., 2016; Kilpinen et al., 2013). Compared with local meQTLs, distant meQTLs are less common, more tissue-specific and have a weaker effect on phenotype (Lemire et al., 2015). Distant meQTLs may interact with target genes by physical connection in the three-dimensional looping structure and commonly act as trans-meQTLs (Michaelson, Loguercio, & Beyer, 2009; Schleif, 1992). The detailed molecular mechanism of cis- and trans-meQTLs is not well known since a large number of association tests are required to eliminate the noise caused by various haplotypes, variants and linkage effects (McClay et al., 2015). 
-
-In this workflow, we apply R package MatrixEQTL for identifying the SNP-CpG associations with following data visualisation. We also compare the result when applying different index in MatrixEQTL, for example, the amount of meQTL identified with/without covariants data.  
-
-Test Dataset
-We will be using a …
-
 
 ```{r library, message=FALSE}
 library(edgeR)
 library(tidyverse)
 library(magrittr)
+library(devtools)
 library(biomaRt)
-BiocManager::install("MatrixEQTL")
 library(MatrixEQTL)
 library(limma)
 library(devtools)
-install_github("drveera/ggman")
 library(ggman)
 library(readr)
+library(lumi)
+library(ggfortify)
+library(rtracklayer)
+library(FactoMineR)
+library(plyranges)
+library(GWASTools)
+library(SNPRelate)
+library(GenomicRanges)
+library(genomation)
+library(Gviz)
+library(grange)
+library(coMET)
+library(GenomicInteractions)
+library(TxDb.Hsapiens.UCSC.hg19.knownGene)
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+```
 
+
+## Set working directory
+```{r}
+setwd("~/R/Weixiong_Project/data/Weixiong_DNAme_files")
 ```
 
 ## Preparing the genome annotation
@@ -54,100 +60,205 @@ grch37_gene = useEnsembl(biomart="ENSEMBL_MART_ENSEMBL",
 
 ```
 
-## Preparing methylation data 
-To run a meQTL analysis, we need the following input datasets:
-1.	Genotype data 
-2.	Methylation levels for each CpG site; and,
-3.	Covariates that 
+## Gentoype data 
 
-While we will not provide direct code on how the input files were created, its important to know what was previously done to generate inout files for meQTL analyses. Below, we will input DNA methylation beta values (Wan et al.) from 96 Placental Illumina EPIC arrays, and additional sample information which we will include in the analysis as covariates.
+Genotype data are usually VCF format, we convert them to GDS to extract the genotype profile and SNP location.
+
+```{r}
+showfile.gds(closeall=TRUE)
+vcf.fn <- "nihRnaEarlyGestation_mafFiltered_1kgFiltered_87Samples_rmDup.vcf.gz"
+snpgdsVCF2GDS(vcf.fn, "genotypes.gds", method="biallelic.only", verbose = TRUE)
+genofile <- snpgdsOpen("genotypes.gds")
+snpgdsSummary(genofile)
+snpset <- snpgdsLDpruning(genofile, ld.threshold=0.8, slide.max.n = 50, maf=0.1, remove.monosnp = TRUE)
+snpset.id.pruned <- unlist(snpset)
+
+g <- read.gdsn(index.gdsn(genofile, "genotype"))
+
+g <- g[,snpset.id.pruned]
+
+g <- g %>% t %>% as.data.frame()
+sample_id <- (read.gdsn(index.gdsn(genofile, "sample.id")))
+
+colnames(g) <- sample_id
+
+ids <- (read.gdsn(index.gdsn(genofile, "snp.rs.id")))
+idsPruned <- ids[snpset.id.pruned]
+genotypes <- tibble::add_column(g, rsIDs = idsPruned, .before = 1) 
+write_tsv(genotypes, "genotype_prunned_87_0.8_nodup.tsv")
+
+## snp_position 
+
+pos <- read.gdsn(index.gdsn(genofile, "snp.position"))
+posPruned <- pos[snpset.id.pruned]
+chrom <- read.gdsn(index.gdsn(genofile,"snp.chromosome"))
+chromPruned <- chrom[snpset.id.pruned]
+snp_posPruned <- cbind(rsIDs = idsPruned,chr = chromPruned,pos=posPruned) %>% as.data.frame()
+write_tsv(snp_posPruned,"snp_position_pruned_0.8_nodup.tsv")
+```
+
+## Preparing methylation data 
+
+We can either use beta- or M-value matirx. To display the difference between beta- and M-value, we generate density plot. 
 
 ```{r SNP sampleInfo}
 #loading placental methylation data
-normDNAme <- readRDS("~/R/Weixiong_Project/data/Weixiong_DNAme_files/Placenta9-betaSQNPlacentaDpP_DpCR_DpSNPs_DpXY_jimmy.rds") 
+normDNAme <- readRDS("Placenta_betaBMIQ_96.rds") 
+
+DNAmeSampleInfo <- read_delim("DNAme_placenta_sampleInfo.txt",
+                              delim = "\t",col_names = c("Name", "ID", "GestationalAge", "Slide", "Basename",
+                                            "Gender", "MaternalAge", "BMI", "SmokingStatus", "Batch"),
+                              col_types = "ccicccidcc") %>% as.data.frame()
 normDNAme <- as.data.frame(normDNAme)
+colnames(normDNAme) <- DNAmeSampleInfo$ID
+pdf("Beta-value.pdf", w=11, h=7, pointsize=15)
+densityPlot(as.matrix(normDNAme), sampGroups=DNAmeSampleInfo$ID,
+            main="Density plot of Beta-value matrix", legend=FALSE)
+dev.off()
+pdf("M-value.pdf", w=11, h=7, pointsize=15)
+densityPlot(as.matrix(normDNAme_M), sampGroups=colnames(normDNAme_M),legend=FALSE,main="Density plot of M-value matrix",xlab="M-values")
+dev.off()
+normDNAme_M <- beta2m(normDNAme)
+normDNAme_87_beta <- normDNAme %>% 
+  dplyr::select(colnames(genotypes[,2:length(colnames(genotypes))])) %>% 
+  rownames_to_column(var="ID")
+write_tsv(normDNAme_87_beta,"methy_int_87_beta.tsv")
 
-write_tsv(normDNAme, "~/R/Weixiong_Project/data/Weixiong_DNAme_files/methylation.txt")
+##PCA
+methylPCA_M <- normDNAme_87 %>% column_to_rownames(var="ID") %>% PCA()
+PC1 <- methylPCA_M$var$coord[,1]
+PC2 <- methylPCA_M$var$coord[,2]
+pairs(methylPCA_M$var$coord)
+labs <- rownames(methylPCA_M$var$coord)
+PCs <- data.frame(cbind(PC1,PC2))
+rownames(PCs) <- labs
+df_out <- as.data.frame(methylPCA_M$ind$coord)
 
-##loading sample data
-# DNAmeSampleInfo <- read_delim("~/Documents/Research/Project/data/Weixiong_DNAme_files/DNAme_placenta_sampleInfo.txt", 
-#                               "\t", col_names = c("Name", "ID", "GestationalAge", "Slide", "Basename",
-#                                                   "Gender", "MaternalAge", "BMI", "SmokingStatus", "Batch"),
-#                               col_types = "ccicccidcc") %>%
-#                                mutate(Gender = if_else(Gender == "M", 0, 1)) %>% #digitalise the gender, male = 0, female = 1
-#                                 mutate(SmokingStatus = if_else(SmokingStatus == "N", 0, 1)) %>% # digitalise the smokingstatus, N =0, Y = 1
-#                                  mutate(Basename = factor(Basename)) %>% 
-#                                   mutate(Basename = as.integer(Basename)) %>% #rank the Basename
-#                                   dplyr::select(ID,GestationalAge, Basename, Gender, MaternalAge, BMI, SmokingStatus, Batch)
-# colnames(normDNAme) <- DNAmeSampleInfo$ID
-# head(DNAmeSampleInfo)
-
+ggplot(PCs, aes(PC1,PC2, label=rownames(PCs))) +geom_text(aes(color=rownames(PCs)))+ scale_color_viridis(option="magma",discrete=TRUE)+theme_bw()+ theme(legend.position = "none") + xlab("PC1") + ylab("PC2") +
+  coord_cartesian(xlim =c(.8,1), ylim = c(-.3, .3)) +
+  ggsave("meth_PCA.pdf",dpi = 320,height=6,width = 6)
 
 ```
 
+## Preparing position information of CpG probes
 
-Principal component analysis (PCA) is a statistical procedure that uses an orthogonal transformation to convert a set of observations of possibly correlated variables (entities each of which takes on various numerical values) into a set of values of linearly uncorrelated variables called principal components. Generally it is a method for simplifying the data and demonstrate which component can be a major factor for distinguishing data. PCA is able to demonstarte the principal components that cause the difference between samples. The component causing the greatest difference in the sample is PC1, the second greatest as PC2. Besides, PCA is able to demonstrate the distribution of samples under different conditions. More similar the sample composition, the closer the sample in PCA. Other than that, PCA indicates the differences between samples. The distance between the two samples on the horizontal and vertical axes represents the similarity under the influence of principal components (PC1,PC2,PC3 and so on). 
+Get position information from EPIC Array manifest file
 
+```{r}
+source("https://bioconductor.org/biocLite.R")
+biocLite("IlluminaHumanMethylationEPICanno.ilm10b4.hg19")
+library(IlluminaHumanMethylationEPICanno.ilm10b4.hg19)
+ann.Epic <- getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b4.hg19) #get annotation of methylation data
+probes <- as.data.frame(ann.Epic) %>% #annotation data -> dataframe
+  dplyr::select(chr, pos) %>% #extract chromsome and position information
+  tibble::rownames_to_column(var = "id") %>% #id: col -> row
+  mutate(chr = gsub("^chr", "", chr)) %>% #replace ^chr to chr
+  mutate(s2 = pos+1,
+         s1 = pos) %>% ## 1bp
+  dplyr::select(id, chr, start=s1, end=s2)
 
-## PCA for covariants data
+write_tsv(probes,"probes.tsv")
+```
 
-To account for variation within our genotyped samples, we need to identify any sample variation in the dataset. Here we use PCA.
+## covariants data
 
+Add covariants to count other variations in linear model
 
 ```{r PCA_5_covariates}
+pca <- snpgdsPCA(genofile,snp.id=snpset.id.pruned)
+pc.percent <- pca$varprop*100
+head(round(pc.percent, 2))
+tab <- data.frame(sample.id = pca$sample.id,
+    EV1 = pca$eigenvect[,1],    # the first eigenvector
+    EV2 = pca$eigenvect[,2],    # the second eigenvector
+    stringsAsFactors = FALSE)
+head(tab)
+
+# lbls <- paste("PC", 1:4, "\n", format(pc.percent[1:4], digits=2), "%", sep="")
+# pairs(pca$eigenvect[,1:4], labels=lbls)
+ggplot(tab,aes(x=EV1,y=EV2,label =tab$sample.id,color=factor(sample.id))) + 
+  geom_text(show.legend = FALSE) + 
+  labs(x="PC1",y="PC2") + 
+coord_cartesian(xlim =c(-1,1), ylim = c(-1, 1))+
+  theme_bw() +
+  ggsave("Genotype_PCA.pdf",dpi = 320,height=7,width = 7)
+
+# Take out first 3 pc and add to covariates
+pcaSamples <- t(pca$eigenvect[,1:3]) %>%
+  as.data.frame()
+colnames(pcaSamples) <- colnames(sample)
+pcaCovs <- t(pcaSamples) %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column(var = "ID")
+
+colnames(pcaCovs) <- c("ID", "PCA1", "PCA2", "PCA3")
 
 
-cov <- read_tsv("", skip = 1) %>% 
+cov <- read_delim("covariates_87.txt","\t", escape_double = FALSE, trim_ws = TRUE) %>% column_to_rownames(var="ID") %>% 
   t() %>% 
-  as.tibble()
+  as.data.frame() %>% 
+  dplyr::select(GestationalAge,Sex,RIN) %>% 
+  rownames_to_column(var="ID") 
+  
+PEER_covariates <- read_delim("M2.PEER_covariates.txt", delim = "\t", col_names = FALSE) %>% 
+  as.data.frame()
+colnames(PEER_covariates) <- PEER_covariates[1,]
+PEER_covariates <- PEER_covariates[-1,]
+rownames(PEER_covariates) <- PEER_covariates[,1]
+PEER_covariates <- PEER_covariates %>% t %>% as.data.frame() 
+PEER_covariates <- PEER_covariates[-1,] %>% rownames_to_column(var="ID")
+covariates <- inner_join(cov, pcaCovs) %>%
+  inner_join(PEER_covariates) %>% 
+  column_to_rownames(var="ID") %>% 
+  t() %>% 
+  as.data.frame() %>% 
+  rownames_to_column(var="ID")
 
-ggplot(cov,aes(x=PCA1,y=PCA2,colour = factor(Sex))) + 
-  geom_point(shape=Sex) + theme_bw() + 
-  labs(colour="Sex")+ 
-  scale_color_manual(labels=c("male","female"),
-                     values=c("red","blue"))
+write_tsv(covariates,"covariates_87_new.tsv")
 
-ggplot(cov,aes(x=PCA1,y=PCA2,colour = factor(GestationalAge))) + 
-  geom_point() + 
-  theme_bw() 
+png("cov_sex.png", w=2000, h=1800, res = 200)
 
-ggplot(cov,aes(x=PCA1,y=PCA2,colour = RIN)) + 
-  geom_point() + 
-  theme_bw() 
-
+read_delim("covariates_87_new.tsv","\t", escape_double = FALSE, trim_ws = TRUE) %>% column_to_rownames(var="ID") %>% 
+  t() %>% 
+  as.data.frame() %>%  
+  ggplot(aes(x=PCA1,y=PCA2,color = as.factor(Sex),label =cov$ID)) + 
+  geom_text() + 
+  labs(colour="Sex",title="Sex")+ 
+  scale_color_manual(labels=c("male","female"),values = c("#0099CC","#FF6666"))+
+  coord_cartesian(xlim =c(-2,2), ylim = c(-2, 2)) + 
+  theme_bw()+theme(plot.title = element_text(hjust = 0.5)) 
+dev.off()
+png("cov_GA.png", w=2300, h=1800, res = 200)
+read_delim("covariates_87_new.tsv","\t", escape_double = FALSE, trim_ws = TRUE) %>% column_to_rownames(var="ID") %>% 
+  t() %>% 
+  as.data.frame() %>%
+ggplot(aes(x=PCA1,y=PCA2,colour = factor(GestationalAge),label =cov$ID)) + 
+  geom_text(show.legend = FALSE) + 
+  labs(title="Gestational Age")+
+  coord_cartesian(xlim =c(-2,2), ylim = c(-2, 2))+theme_bw()+
+  theme(plot.title = element_text(hjust = 0.5)) 
+dev.off()
+## RNA integrity number
+png("cov_RIN.png", w=2300, h=1800, res = 200)
+read_delim("covariates_87_new.tsv","\t", escape_double = FALSE, trim_ws = TRUE) %>% column_to_rownames(var="ID") %>% 
+  t() %>% 
+  as.data.frame() %>%
+ggplot(aes(x=PCA1,y=PCA2,colour = RIN,label =cov$ID)) + 
+  geom_text(show.legend = FALSE) + 
+  labs(title="RNA integrity number")+
+  coord_cartesian(xlim =c(-2,2), ylim = c(-2, 2))+
+  theme_bw() +theme(plot.title = element_text(hjust = 0.5)) 
+dev.off()
 
 
 #plot(cov$PCA1,cov$PCA2,xlab="PCA1", ylab="PCA2", col=brewer.pal(n = 2, name = "Paired"))
 ```
 
 
-## Preparing position information of CpG sites
 
-To build association between snps and CpG sites, we should get the position information of CpG sites. Thus, we get the annotation for Illumina's EPIC methylation arrays and extract the position information of CpG sites. Due to the local effect of meQTL is normally found within 1MB of target CpG site, so the distance between left and right end is set to 1Mb. The probe file will be used in following MatrixEQTL step. 
-```{r}
-library(IlluminaHumanMethylationEPICanno.ilm10b2.hg19)
-
-
-ann.Epic <- getAnnotation(IlluminaHumanMethylationEPICanno.ilm10b2.hg19) #get annotation of methylation data
-as.data.frame(ann.Epic) %>% #annotation data -> dataframe
-  dplyr::select(chr, pos) %>% #extract chromsome and position information
-  tibble::rownames_to_column(var = "id") %>% #id: col -> row
-  mutate(chr = gsub("^chr", "", chr)) %>% #replace ^chr to chr
-  mutate(s2 = pos+1,
-         s1 = pos) %>% ## 1MB
-  dplyr::select(id, chr, s1, s2) %>%
-  write_tsv("~/R/Weixiong_Project/data/Weixiong_DNAme_files/probes.txt")
-
-```
 
 ## Run MatrixEQTL
 
-MatrixEQTL requires 5 datasets: snps, DNA methylation, covariates, SNP position and DNA methylation position. 
-The sample order of all matrices should be consistent                                       
-
-MatrixEQTL processes linear regression to genotype information and DNA methylation information. And Matrix eQTL can perform separate analysis for local (cis) and distant (trans) QTLs. The cis-analysis specific parameters includes PvOutputThreshold.cis > 0, cisDist, snpspos and genepos in MatrixEQTL main function. CisDist is the distance threshold between SNP and association, if the distance between SNP and CpG is equal or less than CisDist, the SNP-CpG association will be identified as the cis-(local) meQTL. snpspos and genepos represents the genomic location of genes and SNPs. MatrixEQTL separates the p-value thresholds for local and distant eQTLs based on PvOutputThreshold and PvOutputThreshold.cis.Distant and local as- sociations significant at corresponding thresholds are recorded in output_file_name and output_file_name.cis respectively and in the returned object. The false discovery rate (FDR) indicates the rate of type I errors (False positive), the MatrixEQTL will calculate FDR for cis- and trans- meQTL respectively.        
-
-Due to DNA methylation is also a quantitative trait consistenting with the DNA methylation, thus the gene expression data is replaced by DNA methylation information. Here we set the cisDis to 50kb, we will compare this output file with 1Mb. 
 ```{r MatrixEQTL, message=FALSE}
 snps <- SlicedData$new()
 snps$fileDelimiter = "\t"   # the TAB character
@@ -155,7 +266,7 @@ snps$fileOmitCharacters = "NA" # denote missing values;
 snps$fileSkipRows = 1        # one row of column labels
 snps$fileSkipColumns = 1      # one column of row labels
 snps$fileSliceSize = 10000      # read file in slices of 100000 rows
-snps$LoadFile("~/R/Weixiong_Project/data/Weixiong_DNAme_files/final_genotypes_87_pruned-r2-08.txt")
+snps$LoadFile("genotype_prunned_87_0.8_nodup.tsv")
 
 ### Load gene expression info
 DNAme = SlicedData$new()
@@ -163,8 +274,8 @@ DNAme$fileDelimiter = "\t"      # the TAB character
 DNAme$fileOmitCharacters = "character" # denote missing values;
 DNAme$fileSkipRows = 1        # one row of column labels
 DNAme$fileSkipColumns = 1       # one column of row labels
-DNAme$fileSliceSize = 20000     # read file in slices of 2,0000 rows
-DNAme$LoadFile("~/R/Weixiong_Project/data/Weixiong_DNAme_files/DNAme_int.txt")
+DNAme$fileSliceSize = 10000     # read file in slices of 2,0000 rows
+DNAme$LoadFile("methy_int_87_beta.tsv")
 
 ### Load covariates
 cvrt = SlicedData$new()
@@ -172,7 +283,7 @@ cvrt$fileDelimiter = "\t"
 cvrt$fileOmitCharacters = "NA"
 cvrt$fileSkipRows = 1
 cvrt$fileSkipColumns = 1
-cvrt$LoadFile("~/R/Weixiong_Project/data/Weixiong_DNAme_files/covariates_87.txt");
+cvrt$LoadFile("covariates_87_new.tsv");
 
 common = intersect(DNAme$columnNames, snps$columnNames) 
 
@@ -181,49 +292,51 @@ snps$ColumnSubsample(match(common, snps$columnNames))
 DNAme$ColumnSubsample(match(common, DNAme$columnNames))
 cvrt$ColumnSubsample(match(common, cvrt$columnNames)) #combin three datas
 
-snpspos = read.table("~/R/Weixiong_Project/data/Weixiong_DNAme_files/snp_positions_pruned.txt", header = TRUE, stringsAsFactors = FALSE) #load 
-DNAmepos = read.table("~/R/Weixiong_Project/data/Weixiong_DNAme_files/probes.txt", header = TRUE, stringsAsFactors = FALSE)
+snpspos = read.table("snp_position_pruned_0.8_nodup.tsv", header = TRUE, stringsAsFactors = FALSE) #load 
+DNAmepos = read.table("probes_f.tsv", header = TRUE, stringsAsFactors = FALSE)
 
 options(MatrixEQTL.dont.preserve.gene.object = TRUE)
 
 ### Run Matrix eQTL
-me_DNAme = Matrix_eQTL_main(
+me_DNAme_beta = Matrix_eQTL_main(
   snps = snps,
   gene = DNAme,
   cvrt = cvrt,
-  output_file_name = '~/R/Weixiong_Project/data/Weixiong_DNAme_files/DNAme_output_trans_1e-8.txt', 
+  output_file_name = 'DNAme_output_trans_1e-8.txt', 
   pvOutputThreshold = 1e-8,  ###If the results of the associate study exceed the threshold, the results will not be retained in the final document
   useModel = modelLINEAR,
   errorCovariance = numeric(),
   verbose = TRUE,  # Setting verbose to True in the configuration will result in the service generating more output (will show both WARNING and INFO log levels), normally you will only see WARNING or higher (ERROR for example)
-  output_file_name.cis = "~/R/Weixiong_Project/data/Weixiong_DNAme_files/DNAme_output_cis_1e-5.txt",
+  output_file_name.cis = "DNAme_output_cis_1e-5.txt",
   pvOutputThreshold.cis = 1e-5,
   snpspos = snpspos,
   genepos = DNAmepos,
   # Distance for local gene-SNP pairs
-  cisDist = 5e4,      #### 1e6 cis window = 1Mb (GTEx) ### DNAme 50kb 
+  cisDist = 1e6,      #### 1e6 cis window = 1Mb (GTEx) ### DNAme 50kb 
   noFDRsaveMemory = FALSE, ##save significant gene-SNP pairs directly to the output files, reduce memory footprint and skip FDR calculation. The eQTLs are not recorded in the returned object if noFDRsaveMemory = TRUE
   min.pv.by.genesnp = TRUE, ## record the minimum p-value for each SNP and each gene in the returned object. The minimum p-values are recorded even if if they are above the corresponding thresholds of pvOutputThreshold and pvOutputThreshold.cis.
   pvalue.hist = "qqplot") ## record information sufficient to create a QQ- plot of the p-values 
 
 
-save(me_DNAme, file = "~/R/Weixiong_Project/data/Weixiong_DNAme_files/meQTL.Rdata")
+save(me_DNAme_beta, file = "me_QTL_B_nopdup.Rdata")
 
 ```
 
-MatrixEQTL will generate large matrix contains sec in time and QTL data. Further step is to extract specific data from it. The time.in.sec refers to the time difference between the start and the end of the analysis (in seconds). The 'all' includes the number of tests perfermed, number of meQTL identified, histogram bins used for recording p-value distribution, number of p-value that fell in each histogram bin. The cis information contains number of tests, number of meQTLs, hists.bins, hist.counts, vector with the best p-value for each SNP (min.pv.snps), vector with the best p-value for each gene (min.pv.gene). 
+
 
 # How many meQTLs were found
-When run without covariates files, 1201 meQTLs are identified; When the Cis-distance is set to 50kb, 1611 meQTLs are identified;When Cis-distance is set to 1MB, 3576 meQTLs are identified. 
+
 ```{r}
-me_DNAme$all$neqtls
+me_DNAme_beta$all$neqtls
+me_DNAme$cis$neqtls
+me_DNAme$trans$neqtls
+me_DNAme$time.in.sec
+me_DNAme$all$ntests
 ```
 
 ## Manhattan Plot
-We plot –log 10 ( P -value) from MatrixEQTL result against chromosome position to demonstrate the location of Cis-meQTL
 ```{r Manhattan Plot}
 ## Manhathan plot
-devtools::install_github("stephenturner/qqman")
 library(qqman)
 pvalue_cis <- as.data.frame(me_DNAme$cis$min.pv.snps) %>% 
   tibble::rownames_to_column(var = "ID")
@@ -235,21 +348,19 @@ head(pvalue_cis)
 
 cis_info <- merge(pvalue_cis, snpspos, by.x = "ID", by.y = "geneid")
 
-cis_info_filter <-  filter(cis_info,!startsWith(chr,"CHR_"))
-cis_info_filter %>%
+pdf("Manhattan_1MB.pdf", width =15, height =7,pointsize = 15 )
+cis_info %>%
   mutate(chr = as.numeric(chr)) %>%
-  manhattan(chr = "chr", bp = "pos", p = "pvalue", snp = "ID", col =c("#A6CEE3","#FB9A99","#E31A1C","#D9D9D9","#1F78B4","#B2DF8A","#33A02C","#FDBF6F","#FF7F00","#CAB2D6","#6A3D9A","#F7FCB9","#B15928","#8DD3C7","#8DA0CB","#FFFF33","#FB8072","#80B1D3","#BF5B17","#B3DE69","#FCCDE5","#BC80BD"),annotatePval = 0.005)
+qqman::manhattan(chr = "chr", bp = "posPruned", p = "pvalue", snp = "ID", ylim = c(0,20), cex.axis = 0.5,genomewideline = -log10(1e-08), col=rev(colorRampPalette(inferno(22))(22)),annotatePval=0.01)
 
-
-#brewer.pal(n = 21, name = "Paired")
-#c("orangered2","aquamarine2","gray40","skyblue2","skyblue4","coral3","lightyellow","magenta4","orchid3","paleturquoise4","sienna1","plum1","seashell3","steelblue3","ivory4","hotpink1","grey38","cyan","chartreuse4","darkolivegreen","blueviolet","cornflowerblue"), 
+dev.off()
 
 ```
-Each point on the Manhattan plot represents a genetic variant. The X axis shows its position on a chromosome, the Y axis indicates how much they are associated with CpG methylation. The blue line is the suggestive line, implying '-log10(1e-5) = 5', the red line represents the genome-wide significance, the default value is '-log10(5e-8) ≈ 7.3'.
+
 
 ## qqPlot
-In this step, we use qq-plot to show whether the meQTL data is reasonable
 ```{r}
+pdf("qq_1MB_M.pdf", width = 12, height = 7,pointsize = 20)
 plot(
   me_DNAme,
   cex = 0.5,
@@ -257,122 +368,100 @@ plot(
   xlim = NULL,
   ylim = NULL,
   main = NULL)
+dev.off()
 ```
-The Q-Q plot verifies the distribution of the data by comparing the quantile of the sample data with the known distribution. It compares the consistency between the observed P value (the Y-axis) and the expected P value. The intuitive interpretation of QQ plot is to judge whether the distribution of points in the graph is reasonable (whether it is on the diagonal), and then infer whether the P value obtained by the current statistical model conforms to the expected value and whether the statistical model is reasonable. In this plot, in the lower left corner of the  plot are the low significance loci, that is, the loci that are not related to the CpG methylation, and the observed P value of these loci should be consistent with the expected value. These points do lie on the diagonal, which indicates that the analysis model is reasonable. Dots in the upper right corner of the figure are the loci with high significance, which is a potential candidate methylation-related QTLs. These points are above the diagonal line, that is, the observed P value of the QTL exceeds the expected P value, indicating that the effect of these QTLs exceeds the random effect, which further indicates that these QTLs are significantly correlated with the DNA methylation. The lower left corner of the figure indicates the reasonableness of the model, while the upper right corner indicates that the DNA methylation related QTLs. In the result of MatrixEQTL, local meQTLs shows higher significance than distant meQTLs. 
 
 
+## Annotate cis-meQTL
 
-## Select top 10 cis-meQTL and annotate
-
-Within validation step, the meQTL with FDR < 0.05 are selected and the 10 strongest SNP-CpG association. Then these SNP-CpG pairs are annotated from the information stored in hg19/GRCh37 marts. The annotation for methylation sites are obtained from "IlluminaHumanMethylationEPICanno.ilm10b2.hg19" package. 
 ```{r}
  # package for getting snp annotation
 sigCis <- me_DNAme$cis$eqtls %>%
-  dplyr::filter(FDR < 0.05)
+  dplyr::filter(FDR < 0.05) 
 
-sigCis10 <- sigCis[1:10,]
-file.path("")
 ## snp annotation
-table1 <- sigCis %>%
-  getBM(attributes = c("refsnp_id", "ensembl_gene_stable_id", 
-                       "allele", "minor_allele"), 
-                  filters = "snp_filter", 
-                  values = sigCis$snps, 
-                  mart = grch37_snp)  
-table2 <- getBM(attributes = c("ensembl_gene_id", "external_gene_name",
-                       "chromosome_name", "start_position", 
-                       "end_position", "description"),
+table1 <- getBM(attributes = c("refsnp_id", "chr_name", 
+                       "allele", "minor_allele","chrom_start","chrom_end", "ensembl_gene_stable_id"), 
+                filters = "snp_filter", 
+                values = sigCis$snps, 
+                mart = grch37_snp) %>% 
+  as.tibble() %>% 
+  unique() %>% 
+  dplyr::filter(!grepl("H", .$chr_name))
+
+table2 <- getBM(attributes = c("ensembl_gene_id", "external_gene_name","description"),
                 filters = "ensembl_gene_id", 
                 values =  table1$ensembl_gene_stable_id, 
-                mart = grch37_gene) 
-sig_Cis_snp <- inner_join(table1,table2, by = c("ensembl_gene_stable_id"="ensembl_gene_id")) %>% as.tibble()
+                mart = grch37_gene)
 
-ann_CisCpG <- ann.Epic[match(sigCis$gene, ann.Epic$Name),c(1:4,22:23)]
-
-ann_CisCpG <- inner_join(sigCis,ann.Epic, by =c("gene" = "Name")) %>% 
-  dplyr::select(chr,pos,strand,description) %>% 
-  as.tibble()
-
+Cis_snp_ann <- inner_join(table1,table2, by = c("ensembl_gene_stable_id"="ensembl_gene_id"), all.x=T) %>% 
+  as.data.frame()
+ann_CisCpG <- ann.Epic[match(sigCis$gene, ann.Epic$Name),] %>% as.data.frame()
 rownames(ann_CisCpG) <- NULL
 
-ann_Cisme <- merge(merge(sig_Cis_snp,sigCis, by.x= "refsnp_id", by.y = "snps"), unique(ann_CisCpG), by.x = "gene", by.y = "Name") %>% 
-  as.data.frame() %>% 
-  dplyr::select(refsnp_id, allele, minor_allele, CpG = gene, external_gene_name, description, statistic, pvalue, FDR, beta)
-
-ann_Cisme
-
-```
-
-```{r}
-ann.Epic %>%
-  as.data.frame() %>%
-  right_join(sigCis, by = c("Name" = "gene")) %>%
-  dplyr::select(chr, pos, strand, Name, one_of(colnames(sigCis))) %>%
-  as_tibble() 
+ann_Cisme <- merge(merge(Cis_snp_ann,sigCis, by.x ="refsnp_id", by.y="snps",no.dups=TRUE), unique(ann_CisCpG), by.x = "gene", by.y = "Name") %>% 
+  as.data.frame() %>%  dplyr::select(snps=refsnp_id,chr_name, 
+                       allele, minor_allele,chrom_start,chrom_end, external_gene_name, description,
+                       CpG = gene,pos,Relation_to_Island,UCSC_RefGene_Name,UCSC_RefGene_Group,statistic, pvalue, FDR, beta) %>% unique()
+  
+ann_Cisme <- ann_Cisme[order(ann_Cisme$pvalue),]
+ann_Cisme10 <- ann_Cisme[1:10,] %>% dplyr::select(snps,chr=chr_name,pos=chrom_start,external_gene=external_gene_name,CpG,pos,RefGene=UCSC_RefGene_Name,statistic,pvalue,FDR,beta)
+write_csv(ann_Cisme10,"annotation_cis_10.csv")
 ```
 
 
-## Select top 10 trans-meQTL
+
+## Annotate trans-meQTL
 
 ```{r}
 sigTrans <- me_DNAme$trans$eqtls %>%
   dplyr::filter(FDR < 0.05)
 
-table3 <- sigTrans %>%
-  getBM(attributes = c("refsnp_id", "ensembl_gene_stable_id", 
-                       "allele", "minor_allele"), 
-                  filters = "snp_filter", 
-                  values = sigTrans$snps, 
-                  mart = grch37_snp)  
-table4 <- getBM(attributes = c("ensembl_gene_id", "external_gene_name",
-                       "chromosome_name", "start_position", 
-                       "end_position", "description"),
+table3 <- getBM(attributes = c("refsnp_id", "chr_name", 
+                       "allele", "minor_allele","chrom_start","chrom_end", "ensembl_gene_stable_id"), 
+                filters = "snp_filter", 
+                values = sigTrans$snps, 
+                mart = grch37_snp) %>% as.tibble() %>% 
+  unique() %>% 
+dplyr::filter(!grepl("H", .$chr_name))
+
+table4 <- getBM(attributes = c("ensembl_gene_id","external_gene_name","description"),
                 filters = "ensembl_gene_id", 
-                values =  sigTrans_snp$ensembl_gene_stable_id, 
-                mart = grch37_gene) 
-sig_Trans_snp <- inner_join(table3,table4, by = c("ensembl_gene_stable_id"="ensembl_gene_id")) %>% as.data.frame()
-ann_TransCpG <- ann.Epic[match(sigTrans$gene, ann.Epic$Name),c(1:4,22:23)]
+                values =  table3$ensembl_gene_stable_id, 
+                mart = grch37_gene)
+
+Trans_snp_ann <- inner_join(table3,table4, by = c("ensembl_gene_stable_id"="ensembl_gene_id"), all.x=T) %>% 
+  as.data.frame()
+ann_TransCpG <- ann.Epic[match(sigTrans$gene, ann.Epic$Name),] %>% as.data.frame()
 rownames(ann_TransCpG) <- NULL
 
-ann_Transme <- merge(merge(sig_Trans_snp,sigTrans, by.x= "refsnp_id", by.y = "snps"), unique(ann_TransCpG), by.x = "gene", by.y = "Name") %>% 
-  as.data.frame() %>% 
-  dplyr::select(refsnp_id, allele, minor_allele, CpG = gene, external_gene_name, description, statistic, pvalue, FDR, beta)
+ann_Transme <- merge(merge(Trans_snp_ann,sigTrans, by.x ="refsnp_id", by.y="snps",no.dups=TRUE), unique(ann_TransCpG), by.x = "gene", by.y = "Name") %>% 
+  as.data.frame() %>%  dplyr::select(snps=refsnp_id,chr_name, 
+                       allele, minor_allele,chrom_start,chrom_end, external_gene_name, description,
+                       CpG = gene,chr,pos,Relation_to_Island,UCSC_RefGene_Name,UCSC_RefGene_Group,statistic, pvalue, FDR, beta) %>% unique()
   
   
 #methylation annotation
-
-ann_transme
+ann_Transme <- ann_Transme[order(ann_Transme$pvalue),]
+ann_Transme10 <- ann_Transme[1:10,] %>% dplyr::select(snps,chr=chr_name,pos=chrom_start,external_gene=external_gene_name,CpG,pos,RefGene=UCSC_RefGene_Name,statistic,pvalue,FDR,beta)
+write_csv(ann_Transme10,"anntation_trans_10.csv")
 ```
 
 
-## Boxplot
+## Violin plot
 
-The strongest cis-association is between SNP rs61776828 and CpG probe cg14484676. Here we use boxplot to demonstrate the association between the genotype and the phenotype (methylation).
+Here we use boxplot to demonstrate the association between the genotype and the phenotype (methylation).
+
+#cis-meQTL
 ```{r}
-
-snp_info <- read_tsv("data/Weixiong_DNAme_files/final_genotypes_87_pruned-r2-08.txt") %>%
+snp_info <- read_tsv("genotype_prunned_87_0.8_nodup.tsv") %>%
   dplyr::rename(snps = rsIDs)
-methylation_info <- read.delim("data/Weixiong_DNAme_files/DNAme_int.txt") %>%
-  rownames_to_column("gene") %>%
-  as_tibble()
-
-me <- methylation_info["cg14484676",]
-snp <- filter(snp_info, rsIDs == "rs61776828")
-first_snp <- rbind(snp, me[, names(snp)]) %>% as.matrix() %>% t %>% as.data.frame() %>% magrittr::set_colnames(c("genotype","methylation")) 
-#first_snp <- within(first_snp, genotype <- factor(genotype, labels = c("A/A", "A/C", "C/C")))
-
-ggplot(first_snp, aes(x =	genotype, y=methylation, group = genotype)) + geom_boxplot() + stat_summary(fun.y = "mean", geom = "point", shape = 23, size = 3, fill = "orange")
-
-
-```
-
-
-```{r}
+methylation_info <- normDNAme_87
 sigCis %>%
-  dplyr::slice(1:10) %>%  # select row 1:10
+  dplyr::slice(1:9) %>%  # select row 1:10
   dplyr::select(snps, gene) %>% # select column snps and gene
   as_tibble() %>%
-  left_join(methylation_info, by = "gene") %>% # find match CpG
+  left_join(methylation_info, by = c("gene"="ID")) %>% # find match CpG
   gather("Sample", "Methylation", starts_with("PAC")) %>% # Store sample name in Col "Sample", store correlated beta in Methylation
   filter(Sample %in% colnames(snp_info)) %>% # match with sample in snp, 960->870 rows
   split(f = .$Sample) %>% # split every PAC sample in splited tibbles
@@ -382,35 +471,490 @@ sigCis %>%
   }) %>%
   bind_rows() %>% # bind the rows together
   mutate(Genotype = as.factor(Genotype)) %>%
-  ggplot(aes(Genotype, Methylation)) +
-  geom_boxplot() + stat_summary(fun.y = "mean", geom = "point", shape = 23, size = 3, fill = "orange") +
-  facet_wrap(~snps) +
-  theme_bw()
+  ggplot(aes(Genotype, Methylation)) + 
+  geom_jitter(colour = "grey40", size = 0.4)+
+  geom_violin(aes(fill=Genotype),width=1.4,scale = "count",trim = FALSE,alpha=0.5)+
+  scale_fill_brewer(palette = brewer.pal(7, "Blues")[c(3,4,5)]) +
+  geom_boxplot(width=0.1, color="black", alpha=0.2)+
+  stat_summary(fun.y=median, geom = "point",fill ="orange",shape=21,size=2.5) +
+  scale_x_discrete(breaks = c("0","1","2"),labels = c('RR','RA','AA'))+
+labs(tag="Reference/Alternative")+
+  facet_wrap(~snps, scales = "free")+
+  theme_bw() +
+  ggsave("top_cis.png",dpi = 320,height=7,width = 11)
+
 ```
 
+#trans-meQTL, duplicate associations are removed
+```{r}
+sigTrans_nd<-sigTrans[!duplicated(sigTrans$snps),]
+sigTrans %>%
+  dplyr::slice(1:9) %>%  # select row 1:10
+  dplyr::select(snps, gene) %>% # select column snps and gene
+  as_tibble() %>%
+  left_join(methylation_info, by = c("gene"="ID")) %>% # find match CpG
+  gather("Sample", "Methylation", starts_with("PAC")) %>% # Store sample name in Col "Sample", store correlated beta in Methylation
+  filter(Sample %in% colnames(snp_info)) %>% # match with sample in snp, 960->870 rows
+  split(f = .$Sample) %>% # split every PAC sample in splited tibbles
+  lapply(function(x){
+    left_join(x, snp_info[,c("snps", unique(x$Sample))]) %>% # allocate genotype data to every x by rsID
+      set_colnames(gsub("PAC.+", "Genotype", colnames(.))) # the original colnames would be PACXXX, we change it to Genotype
+  }) %>%
+  bind_rows() %>% # bind the rows together
+  mutate(Genotype = as.factor(Genotype)) %>%
+  ggplot(aes(Genotype, Methylation)) + 
+  geom_jitter(colour = "grey40", size = 0.4)+
+  geom_violin(aes(fill=Genotype),width=1.4,scale = "count",trim = FALSE,alpha=0.5)+
+  scale_fill_brewer(palette = brewer.pal(7, "Blues")[c(3,4,5)]) +
+  geom_boxplot(width=0.1, color="black", alpha=0.2)+
+  stat_summary(fun.y=median, geom = "point",fill ="orange",shape=21,size=2.5) +
+  scale_x_discrete(breaks = c("0","1","2"),labels = c('RR','RA','AA'))+
+  facet_wrap(~snps,scales = "free")+
+  theme_bw() +
+  ggsave("violin_trans.png",dpi = 320,height=7,width = 11)
+
+```
 
 
 
 # Find snps affecting multiple CpG sites
 ```{r}
 Cis_dup_snp <- sigCis[duplicated(sigCis$snps) | duplicated(sigCis$snps, fromLast = TRUE),]
+write_csv(Cis_dup_snp,"dup_snps_cis.csv")
 Cis_dup_cpg <- sigCis[duplicated(sigCis$gene) | duplicated(sigCis$gene, fromLast = TRUE),]
+write_csv(Cis_dup_cpg,"dup_cpg_cis.csv")
 Trans_dup_snp <- sigTrans[duplicated(sigTrans$snps) | duplicated(sigTrans$snps, fromLast = TRUE),]
+write_csv(Trans_dup_snp,"dup_snp_trans.csv")
 Trans_dup_cpg <- sigTrans[duplicated(sigTrans$gene) | duplicated(sigTrans$gene, fromLast = TRUE),]
+write_csv(Trans_dup_cpg,"dup_cpg.trans.csv")
 ```
 
 # Plot cis-distance vs. R-square
 ```{r}
-cis_dis <- dplyr::select(ann_cisme, refsnp_id,start_position,CpG_sites,pos,statistic,pvalue) %>% as.tibble() %>% mutate(cis_dis = pos-start_position) %>% mutate(regulation = if_else(cis_dis <= 0, "down", "up")) 
-cis_dis[complete.cases(cis_dis), ]
+cis_dis <- ann_Cisme %>% dplyr::select(snps,chr_name,chrom_start,CpG,pos,statistic,pvalue) %>% 
+  as.tibble() %>% mutate(cis_dis = (pos-chrom_start)/1000)
 tstat = cis_dis$statistic
 r = tstat / sqrt( dfFull + tstat^2 )
 R2 = r^2
 cis_dis$R2 <- R2
-ggplot(cis_dis,aes(x=cis_dis,y=R2,color=regulation)) + geom_point() + scale_x_continuous(limits = c(-1383674,1383674)) + theme_bw() + labs(x="SNP-CpG distance/kb",y="R-square") 
+
+
+ggplot(cis_dis,aes(x=cis_dis,y=R2)) + 
+  geom_point(color=brewer.pal(7, "Greys")[7]) + 
+  scale_x_continuous(limits = c(-1000,1000)) + 
+  theme_bw() + 
+  labs(x="SNP-CpG distance/kb",y="R-square") +
+  ggsave("R-square_cis.pdf",dpi = 320,height=7,width = 11)
+
 ```
 
+## plot Trans vs. R-square
 ```{r}
+trans_dis <- ann_Transme %>% dplyr::select(snps,chrom_start,CpG,pos,statistic,pvalue) %>% as.tibble() %>% mutate(trans_dis = (chrom_start-start_position)/1000)
+tstat = trans_dis$statistic
+r = tstat / sqrt( dfFull + tstat^2 )
+R2 = r^2
+trans_dis$R2 <- R2
 
+
+ggplot(trans_dis,aes(x=trans_dis,y=R2)) + geom_point() + scale_x_continuous(limits = c(-20000,20000)) + 
+  theme_bw() + 
+  labs(x="SNP-CpG distance/kb",y="R-square") +
+  ggsave("R-square_trans.pdf",dpi = 320,height=7,width = 11)
+
+```
+
+## cis-DNA and snp proportion
+```{r}
+cis_DNAme_percentage <- table(as.character(sigCis$gene)) %>% 
+  as.data.frame() %>% 
+  mutate(perc=Freq/sum(Freq))
+
+cis_DNAme_percentage %>% 
+  group_by(Freq) %>% 
+  summarise(perc = sum(perc)) %>% 
+  ggplot(aes(x= Freq,y= perc*100)) + 
+  geom_bar(stat="identity",fill="skyblue2") + 
+  geom_text(aes(label = scales::percent(perc)),vjust=.5) + 
+  labs(y = "Proportion", x="meQTL SNP per CpG site") +
+  theme_minimal() +theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=20,face="bold"))+
+  ggsave("cis_DNAme_percentage.pdf",dpi = 320,height=7,width = 11)
+
+
+
+cis_SNP_percentage <- table(as.character(sigCis$snps)) %>% 
+  as.data.frame() %>% 
+  mutate(perc=Freq/sum(Freq))
+cis_SNP_percentage %>% 
+  group_by(Freq) %>% 
+  summarise(perc = sum(perc)) %>% 
+  ggplot(aes(x= Freq,y= perc*100)) + 
+  geom_bar(stat="identity",fill="skyblue2") +
+  geom_text(aes(label = scales::percent(perc)),vjust=.5) + 
+  labs(y = "Proportion", x="CpG site per meQTL SNP") +
+  theme_minimal() + 
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=20,face="bold"))+
+  ggsave("cis_SNP_percentage.pdf",dpi = 320,height=7,width = 11)
+
+
+median(cis_dis$cis_dis)
+
+```
+
+## Trans-DNA and snp proportion
+```{r}
+trans_DNAme_percentage <- table(as.character(sigTrans$gene)) %>% 
+  as.data.frame() %>% 
+  mutate(perc=Freq/sum(Freq))
+
+trans_DNAme_percentage %>% 
+  group_by(Freq) %>% 
+  summarise(perc = sum(perc)) %>% 
+  ggplot(aes(x= Freq,y= perc*100)) + 
+  geom_bar(stat="identity",fill= brewer.pal(7, "RdYlGn")[2]) + 
+  geom_text(aes(label = scales::percent(perc)),vjust=.5) + 
+  labs(y = "Proportion", x="meQTL SNP per CpG site") +
+  theme_minimal() +theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=20,face="bold"))+
+  ggsave("trans_DNAme_percentage.pdf",dpi = 320,height=7,width = 11)
+
+
+
+trans_SNP_percentage <- table(as.character(sigTrans$snps)) %>% 
+  as.data.frame() %>% 
+  mutate(perc=Freq/sum(Freq))
+
+trans_SNP_percentage %>% 
+  group_by(Freq) %>% 
+  summarise(perc = sum(perc)) %>% 
+  ggplot(aes(x= Freq,y= perc*100)) + 
+  geom_bar(stat="identity",fill= brewer.pal(7, "RdYlGn")[2]) + 
+  geom_text(aes(label = scales::percent(perc)),vjust=.5) + 
+  labs(y = "Proportion", x="CpG site per meQTL SNP") +
+  theme_minimal() + 
+  theme(axis.text=element_text(size=15),
+        axis.title=element_text(size=20,face="bold"))+
+  ggsave("trans_SNP_percentage.pdf",dpi = 320,height=7,width = 11)
+
+```
+
+## SNPs in GWAS catalog
+```{r}
+GWAS_cata <-read_delim("gwas_catalog_v1.0-associations_e95_r2019-03-22.tsv", 
+    "\t", escape_double = FALSE, trim_ws = TRUE) 
+Gwas_cis <- GWAS_cata %>% dplyr::filter(GWAS_cata$SNPS %in% sigCis$snps)
+Gwas_trans <- GWAS_cata %>% dplyr::filter(GWAS_cata$SNPS %in% sigTrans$snps)
+Gwas_cis_unique <- Gwas_cis[!duplicated(Gwas_cis$SNPS),] 
+Traits <- table(as.character(Gwas_cis_unique$`DISEASE/TRAIT`)) %>% as.data.frame()
+Traits<- Traits[order(Traits$Freq,decreasing =TRUE),] 
+png("GwasTrait.png", w=2300, h=1500, pointsize=100, res = 200)
+ Traits %>% 
+  dplyr::slice(1:15) %>% 
+  ggplot(aes(x=Var1,y=Freq)) + 
+  geom_bar(stat="identity",fill="#336666") +
+  coord_flip() +
+  labs(y="Count",x="Trait/Disease")+
+  theme(legend.position = "top",panel.grid.major =element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(),axis.line = element_line(colour = "black")) +
+   ggsave("GwasTrait.pdf",dpi = 320,height=7,width = 11)
+
+Gwas_trans_unique <- Gwas_trans[!duplicated(Gwas_trans$SNPS),] 
+Traits_trans <- table(as.character(Gwas_trans$`DISEASE/TRAIT`)) %>% as.data.frame()
+
+```
+
+## Mehylation sites location
+```{r}
+cis_me_group <- table(as.character(ann_Cisme$Relation_to_Island)) %>% 
+  as.data.frame()
+
+
+trans_me_group <- table(as.character(ann_Transme$Relation_to_Island)) %>% 
+  as.data.frame()
+
+Overall <- normDNAme_87 %>% inner_join(as.data.frame(ann.Epic),by=c("ID"="Name")) 
+Overall <-table(as.character(Overall$Relation_to_Island)) %>% as.data.frame()
+
+
+
+cis_me_group <- cis_me_group %>%  mutate(perc=Freq/sum(Freq)) %>% group_by(Var1,Freq) %>% 
+  summarise(perc = sum(perc)) 
+Overall <- Overall %>% mutate(perc=Freq/sum(Freq)) %>% group_by(Var1,Freq) %>% 
+  summarise(perc = sum(perc)) 
+trans_me_group <- trans_me_group %>% mutate(perc=Freq/sum(Freq)) %>% group_by(Var1,Freq) %>% 
+  summarise(perc = sum(perc))
+cis_me_group$df <- 1
+trans_me_group$df <-2
+Overall$df <- 3
+df <- rbind(cis_me_group, trans_me_group,Overall)
+df <- melt(df, id.vars=c("Var1", "perc", "df"))
+
+ggplot(df,aes(x=Var1,y=perc*100,fill=as.factor(df)))+
+  geom_bar(stat = "identity",position = 'dodge') +
+  scale_fill_manual(values = c("1" = "#e97f02", "2" = "#f8ca00", "3" = "#77AAAD"),labels = c("cis-meQTL CpG","trans-meQTL CpG","EPIC array")) +
+  geom_text(aes(label = scales::percent(perc)),position = position_dodge(width = .9))+
+  labs(x=NULL,y="Proportion") + theme_bw()+
+  theme(legend.title =element_blank(),axis.title.y = element_text(size=16),axis.text=element_text(size=16),legend.text = element_text(size = 20)) +
+   ggsave("Methylation_location.pdf",dpi = 320,height=7,width = 11)
+
+```
+
+
+
+## Hit cis-meSNP with public regulatory database
+#cis-meQTL
+```{r}
+cis_snp_gr <- sigCis %>%
+  getBM(attributes = c("refsnp_id", "chr_name","chrom_start","chrom_end","chrom_strand"), 
+                  filters = "snp_filter", 
+                  values = sigCis$snps, 
+                  mart = grch37_snp, uniqueRows = TRUE) %>% as.data.frame() %>% 
+  unique() %>%  
+  dplyr::filter(!grepl("H", .$chr_name))
+
+cis_snp_gr$chr_name <- sub("^", "chr", cis_snp_gr$chr_name) 
+cis_snp_gr <- as_granges(dplyr::distinct(cis_snp_gr,refsnp_id,.keep_all=TRUE),seqnames =chr_name,start=chrom_start,end=chrom_end,strand = chrom_strand)
+regulatory_elements <- plyranges::read_bed("E091_15_coreMarks_dense.bed")
+enhancer_humanAll <- read_bed("human_permissive_enhancers_phase_1_and_2.bed")
+enhancer_humanAll <- read_bed("enhancer_data_at_2019-01-24_06-14-09.bed")
+Promoter_humanAll <- readed("promoter_data_at_2019-01-24_08-21-25.bed")
+cis_cpg_gr<- as_granges(dplyr::distinct(ann_CisCpG,Name,.keep_all=TRUE),seqnames=chr,start=pos,end=pos+1)
+allSNPPro <- find_overlaps(cis_snp_gr,Promoter_humanAll,suffix = c("ranges", "ranges")) %>% 
+  as.data.frame() 
+allSNPEhn <-find_overlaps(cis_snp_gr,enhancer_humanAll,suffix = c("ranges", "ranges")) %>% 
+  as.data.frame()
+allSNPReg <-find_overlaps(cis_snp_gr,regulatory_elements,suffix = c("ranges", "ranges")) %>% 
+  as.data.frame() 
+allCPGPro <-find_overlaps(cis_cpg_gr,Promoter_humanAll,suffix = c("ranges", "ranges")) %>% as.data.frame() 
+allCPGEhn <-find_overlaps(cis_cpg_gr,enhancer_humanAll,suffix = c("ranges", "ranges")) %>% as.data.frame() 
+allCPGReg <-find_overlaps(cis_cpg_gr,regulatory_elements,suffix = c("ranges", "ranges")) %>% as.data.frame() 
+allQTLReg <- sigCis %>% 
+  dplyr::select(snps,gene) %>% as_tibble() %>% 
+  inner_join(allCPGReg,by=c("gene"="Name")) %>% 
+  dplyr::distinct() %>% 
+  dplyr::select(snps,gene,CpGname=name) %>% 
+  inner_join(allSNPReg,by=c("snps"="refsnp_id")) %>% 
+  dplyr::distinct() %>% dplyr::select(snps,Cpg=gene,SNPname=name,CpGname)
+common <- allQTLReg[allQTLReg$SNPname == allQTLReg$CpGname,]
+
+# Plot
+allSNPReg <- allSNPReg[str_order(allSNPReg$name,numberic=TRUE),] %>% as.tibble
+
+all_SNP_Reg_percentage <- table(as.character(allSNPReg$name)) %>% 
+  as.data.frame() %>% 
+  mutate(perc=Freq/sum(Freq))
+
+
+ChromHMM_color <- allSNPReg %>% 
+  dplyr::select(name,itemRgb) %>% 
+  dplyr::distinct()
+
+ChromHMM_color_1 <- ChromHMM_color$name %>% 
+    str_sort(numeric = T) %>% 
+     str_remove(.,"[0-9]*_") %>% 
+  as_tibble() %>%
+  magrittr::set_colnames("name") %>% 
+  left_join(ChromHMM_color %>% 
+              mutate(name = str_remove(name,"[0-9]*_"))) %>%   
+  dplyr::filter(!startsWith(name,"Q")) %>% 
+  dplyr::distinct(name,itemRgb) %>% 
+  column_to_rownames(var="name")
+
+allSNPReg %>%  
+  right_join(all_SNP_Reg_percentage,by=c("name"="Var1")) %>%   
+  as.data.frame() %>% 
+  dplyr::select(name,Freq) %>% 
+  dplyr::filter(!startsWith(name,"15")) %>%
+  mutate(name=gsub(".*_","",name)) %>% 
+  mutate(name = factor(name, level = rev(rownames(ChromHMM_color_1)))) %>%
+  ggplot(aes(name,fill=name)) + 
+  geom_bar(aes(y=..count../sum(..count..))) +
+  scale_fill_manual(values=rev(ChromHMM_color_1$itemRgb)) +
+  scale_y_continuous(labels=percent_format())+
+  coord_flip()+
+  theme_bw()+
+  theme(legend.position = "none",axis.title = element_blank(), axis.text=element_text(size=15)) +
+  ggsave("Cis_HMM_snp.pdf",dpi = 320,height=7,width = 11)
+
+
+
+## CPG
+all_CPG_Reg_percentage <- table(as.character(allCPGReg$name)) %>% 
+  as.data.frame() %>% 
+  mutate(perc=Freq/sum(Freq))
+
+ChromHMM_color_2 <- ChromHMM_color[ChromHMM_color$name %in% allCPGReg$name,]
+ChromHMM_color_2 <- ChromHMM_color_2$name %>% 
+  str_sort(numeric = T) %>% 
+     str_remove(.,"[0-9]*_") %>% 
+  as_tibble() %>%
+  magrittr::set_colnames("name") %>% 
+  left_join(ChromHMM_color %>% 
+              mutate(name = str_remove(name,"[0-9]*_"))) %>%   
+  dplyr::filter(!startsWith(name,"Q"))  %>% 
+  dplyr::distinct(name,itemRgb) %>% 
+  column_to_rownames(var="name")
+
+
+allCPGReg %>%  
+  right_join(all_CPG_Reg_percentage,by=c("name"="Var1")) %>%  
+  as.data.frame() %>% 
+  dplyr::select(name,Freq) %>% 
+  dplyr::filter(!startsWith(name,"15")) %>% 
+  mutate(name=gsub(".*_","",name)) %>%
+  mutate(name = factor(name, level = rev(rownames(ChromHMM_color_2)))) %>%
+  na.omit() %>% 
+  ggplot(aes(name,fill=name)) + 
+   geom_bar(aes(y=..count../sum(..count..))) +
+  scale_fill_manual(values=rev(ChromHMM_color_2$itemRgb))+
+  scale_y_continuous(labels=percent_format())+
+  coord_flip() +
+  theme_bw()+
+  theme(legend.position = "none",axis.title = element_blank(), axis.text=element_text(size=15)) +
+   ggsave("Cis_HMM_CPG.pdf",dpi = 320,height=7,width = 11)
+
+```
+
+
+#trans-meQTL
+```{r}
+trans_snp_gr <- sigTrans %>%
+  getBM(attributes = c("refsnp_id", "chr_name","chrom_start","chrom_end","chrom_strand"), 
+                  filters = "snp_filter", 
+                  values = sigTrans$snps, 
+                  mart = grch37_snp, uniqueRows = TRUE) %>% as.data.frame() %>% 
+  unique() %>%  dplyr::filter(!grepl("H", .$chr_name))
+
+trans_snp_gr$chr_name <- sub("^", "chr", trans_snp_gr$chr_name) 
+trans_snp_gr <- as_granges(dplyr::distinct(trans_snp_gr,refsnp_id,.keep_all=TRUE),seqnames =chr_name,start=chrom_start,end=chrom_end,strand = chrom_strand)
+regulatory_elements <- read_bed("E091_15_coreMarks_dense.bed")
+#enhancer_humanAll <- readBed("human_permissive_enhancers_phase_1_and_2.bed")
+trans_cpg_gr<- as_granges(dplyr::distinct(ann_TransCpG,Name,.keep_all=TRUE),seqnames=chr,start=pos,end=pos+1)
+Trans_allSNPReg <-find_overlaps(trans_snp_gr,regulatory_elements,suffix = c("ranges", "ranges")) %>% 
+  as.data.frame() 
+Trans_allSNPPro <- find_overlaps(trans_snp_gr,Promoter_humanAll,suffix = c("ranges", "ranges")) %>% 
+  as.data.frame() 
+Trans_allSNPEhn <-find_overlaps(trans_snp_gr,enhancer_humanAll,suffix = c("ranges", "ranges")) %>% 
+  as.data.frame() 
+Trans_allCPGPro <-find_overlaps(trans_snp_gr,Promoter_humanAll,suffix = c("ranges", "ranges")) %>% as.data.frame()
+Trans_allCPGEhn <-find_overlaps(trans_snp_gr,enhancer_humanAll,suffix = c("ranges", "ranges")) %>% as.data.frame()
+Trans_allCPGReg <-find_overlaps(trans_cpg_gr,regulatory_elements,suffix = c("ranges", "ranges")) %>% as.data.frame() 
+Trans_allQTLReg <- sigTrans %>% 
+  dplyr::select(snps,gene) %>% as_tibble() %>% 
+  inner_join(Trans_allCPGReg,by=c("gene"="Name")) %>% 
+  dplyr::distinct() %>% 
+  dplyr::select(snps,gene,CpGname=name)   %>% 
+  inner_join(Trans_allSNPReg,by=c("snps"="refsnp_id")) %>% 
+  dplyr::distinct() %>% dplyr::select(snps,Cpg=gene,SNPname=name,CpGname)
+common_trans <- Trans_allQTLReg[Trans_allQTLReg$SNPname == Trans_allQTLReg$CpGname,]
+
+
+## Plot
+
+Trans_allSNPReg <- Trans_allSNPReg[order(Trans_allSNPReg$name),]
+Trans_all_SNP_Reg_percentage <- table(as.character(Trans_allSNPReg$name)) %>% 
+  as.data.frame() %>% 
+  mutate(perc=Freq/sum(Freq))
+
+png("trans_HMM_snp.png", w=2300, h=1200, pointsize=100, res = 200)
+ChromHMM_color_3<-ChromHMM_color[ChromHMM_color$name %in% Trans_allSNPReg$name,]
+ChromHMM_color_3 <- ChromHMM_color_3$name %>% 
+     str_sort(numeric = T) %>% 
+     str_remove(.,"[0-9]*_") %>% 
+  as_tibble() %>%
+  magrittr::set_colnames("name") %>% 
+  left_join(ChromHMM_color %>% 
+              mutate(name = str_remove(name,"[0-9]*_"))) %>% 
+  dplyr::filter(!startsWith(name,"Q"))  %>% 
+  dplyr::distinct(name,itemRgb) %>% 
+  column_to_rownames(var="name") 
+
+Trans_allSNPReg %>%  
+  right_join(Trans_all_SNP_Reg_percentage,by=c("name"="Var1")) %>%  
+  as.data.frame() %>% 
+  dplyr::select(name,Freq) %>% 
+  dplyr::filter(!startsWith(name,"15")) %>% 
+  mutate(name=gsub(".*_","",name)) %>% 
+  mutate(name = factor(name, level = rev(rownames(ChromHMM_color_3)))) %>%
+  na.omit() %>% 
+  ggplot(aes(name,fill=name)) + 
+   geom_bar(aes(y=..count../sum(..count..))) +
+  scale_fill_manual(values=rev(ChromHMM_color_3$itemRgb))+
+  scale_y_continuous(labels=percent_format())+
+  labs(y=gsub("_","",ChromHMM_color$name)) +
+  coord_flip() +
+  theme_bw()+
+  theme(legend.position = "none",axis.title = element_blank(), axis.text=element_text(size=15))+
+  ggsave("trans_HMM_snp.pdf",dpi = 320,height=7,width = 11)
+dev.off()
+
+## CPG
+Trans_all_CPG_Reg_percentage <- table(as.character(Trans_allCPGReg$name)) %>% 
+  as.data.frame() %>% 
+  mutate(perc=Freq/sum(Freq))
+
+
+ChromHMM_color_4 <- ChromHMM_color[ChromHMM_color$name %in% Trans_allCPGReg$name,]
+ChromHMM_color_4 <- ChromHMM_color_4$name %>% 
+    str_sort(numeric = T) %>% 
+     str_remove(.,"[0-9]*_") %>% 
+  as_tibble() %>%
+  magrittr::set_colnames("name") %>% 
+  left_join(ChromHMM_color %>% 
+              mutate(name = str_remove(name,"[0-9]*_"))) %>%   
+  dplyr::filter(!startsWith(name,"Q")) %>%
+  dplyr::distinct(name,itemRgb) %>% 
+  column_to_rownames(var="name")
+
+Trans_allCPGReg %>%  
+  right_join(Trans_all_CPG_Reg_percentage,by=c("name"="Var1")) %>%   
+  as.data.frame() %>% 
+  dplyr::select(name,Freq) %>% 
+  dplyr::filter(!startsWith(name,"15")) %>% 
+  mutate(name=gsub(".*_","",name)) %>% 
+  mutate(name = factor(name, level = rev(rownames(ChromHMM_color_4)))) %>%
+  na.omit() %>% 
+  ggplot(aes(name,fill=name)) + 
+   geom_bar(aes(y=..count../sum(..count..))) +
+  scale_fill_manual(values=rev(ChromHMM_color_4$itemRgb))+
+  scale_y_continuous(labels=percent_format())+
+  coord_flip() +
+  theme_bw()+
+  theme(legend.position = "none",axis.title = element_blank(), axis.text=element_text(size=15)) +
+  ggsave("trans_HMM_CPG.pdf",dpi = 320,height=7,width = 11)
+
+
+```
+
+
+## GTEx
+```{r}
+setwd("GTEx_Analysis_v7_eQTL")
+filelist = list.files(pattern = ".*.txt")
+datalist =lapply(filelist, FUN=read.delim, header=TRUE)
+left_join(as.data.frame(datalist[1]),sigCis,by=c("rs_id_dbSNP147_GRCh37p13"="snps"))
+
+Ovary <- inner_join(sigCis,as.data.frame(datalist[34]),by=c("snps"="rs_id_dbSNP147_GRCh37p13"))
+#35Pancreas-41
+dim(inner_join(sigCis,as.data.frame(datalist[35]),by=c("snps"="rs_id_dbSNP147_GRCh37p13")))
+#Pituitary
+#37Prostate-16
+Prostate<-inner_join(sigCis,as.data.frame(datalist[37]),by=c("snps"="rs_id_dbSNP147_GRCh37p13"))
+#39-40 skin
+#Small_Intestine_Terminal_Ileum
+#Spleen
+#Stomach
+#43Testis-23
+Testis <- inner_join(sigCis,as.data.frame(datalist[43]),by=c("snps"="rs_id_dbSNP147_GRCh37p13"))
+#Thyroid
+#45Uterus-14
+Uterus <- inner_join(sigCis,as.data.frame(datalist[45]),by=c("snps"="rs_id_dbSNP147_GRCh37p13"))
+#46Vagina-15
+Vagina<-inner_join(sigCis,as.data.frame(datalist[46]),by=c("snps"="rs_id_dbSNP147_GRCh37p13"))
+#Whole_Blood
+
+G <- rbind(Ovary,Prostate,Testis,Uterus,Vagina)
+setwd("~/R/Weixiong_Project/data/Weixiong_DNAme_files")
 ```
 
